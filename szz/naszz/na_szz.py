@@ -22,8 +22,10 @@ class NASZZ(RASZZ):
         self.repos_dir = repos_dir
         super().__init__(repo_full_name, repo_url, repos_dir)
 
-    def _extract_method_history(self, commit: str, file_path: str, method_name: str,
-                                method_declaration_line: str | int):
+    @staticmethod
+    def extract_method_history(repository_path: str, commit: str,
+                               file_path: str, method_name: str,
+                               method_declaration_line: str | int):
         if platform.system() == 'Windows':
             PATH_TO_CODE_TRACKER = os.path.join(Options.PYSZZ_HOME, 'tools/CodeTracker-2.7/bin/CodeTracker.bat')
         else:
@@ -32,7 +34,7 @@ class NASZZ(RASZZ):
         log.info(f'Running CodeTracker on {commit}, {file_path + "#" + method_name}')
         cmd = [
             PATH_TO_CODE_TRACKER,
-            '-r', self._repository_path,
+            '-r', repository_path,
             '-c', commit,
             '-f', file_path,
             '-m', method_name,
@@ -45,7 +47,9 @@ class NASZZ(RASZZ):
         else:
             return json.loads(result.stdout)
 
-    def _extract_commit_file_ast_mapping(self, commit: str, file_paths: List[str], algorithm: str = 'gt'):
+    @staticmethod
+    def extract_commit_file_ast_mapping(repos_dir: str, repo_full_name: str, commit: str,
+                                        file_paths: List[str], algorithm: str = 'gt'):
         if platform.system() == 'Windows':
             PATH_TO_AST_MAPPING = os.path.join(Options.PYSZZ_HOME, 'tools/ICSE2021AstMapping/bin/AstMapping.bat')
         else:
@@ -55,8 +59,8 @@ class NASZZ(RASZZ):
         cmd = [
             PATH_TO_AST_MAPPING,
             '-a', algorithm,
-            '-p', self.repos_dir,
-            '-n', self.repo_full_name,
+            '-p', repos_dir,
+            '-n', repo_full_name,
             '-c', commit,
             '-f', ','.join(file_paths)
         ]
@@ -67,7 +71,8 @@ class NASZZ(RASZZ):
         else:
             return json.loads(result.stdout)
 
-    def _extract_file_def_use(self, file_path: str):
+    @staticmethod
+    def extract_file_def_use(file_path: str):
         if platform.system() == 'Windows':
             PATH_TO_TINY_PDG = os.path.join(Options.PYSZZ_HOME, 'tools/TinyPDG/bin/TinyPDG.bat')
         else:
@@ -132,11 +137,3 @@ class NASZZ(RASZZ):
 
         bic_found = {c for c in bic_found if c.hexsha != fix_commit_hash}
         return bic_found
-
-
-# # Tests
-# _szz = NASZZ("activemq", None, r"E:\github\vulnerable-analysis")
-# r = _szz._extract_commit_file_ast_mapping('a30cb8e263300855d4d38710f7d5d9b61223c98f',
-#                                           ['activemq-kahadb-store/src/main/java/org/apache/activemq/store/kahadb/disk/page/PageFile.java'])
-# r = _szz._extract_file_def_use(r'E:\github\TinyPDG\test.txt')
-# print(r)
