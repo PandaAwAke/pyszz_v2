@@ -4,13 +4,14 @@ import logging as log
 import platform
 import subprocess
 import tempfile
+from collections import defaultdict
 from typing import Set, List
 
 from git import Commit
 
 from options import Options
 from szz.core.abstract_szz import DetectLineMoved, LineChangeType, ImpactedFile
-from szz.naszz.java_parser import JavaParser
+from szz.naszz.java_parser import JavaParser, Function
 from szz.ra_szz import RASZZ
 
 SUPPORTED_FILE_EXT = ['.java']
@@ -51,30 +52,6 @@ class NASZZ(RASZZ):
         else:
             return json.loads(result.stdout)
 
-    # @staticmethod
-    # def extract_commit_file_ast_mapping(repos_dir: str, repo_full_name: str, commit: str,
-    #                                     file_paths: List[str], algorithm: str = 'gt'):
-    #     if platform.system() == 'Windows':
-    #         PATH_TO_AST_MAPPING = os.path.join(Options.PYSZZ_HOME, 'tools/ICSE2021AstMapping/bin/AstMapping.bat')
-    #     else:
-    #         PATH_TO_AST_MAPPING = os.path.join(Options.PYSZZ_HOME, 'tools/ICSE2021AstMapping/bin/AstMapping')
-    #
-    #     log.info(f'Running ICSE2021 Ast Mapping on {commit}, {file_paths}')
-    #     cmd = [
-    #         PATH_TO_AST_MAPPING,
-    #         '-a', algorithm,
-    #         '-p', repos_dir,
-    #         '-n', repo_full_name,
-    #         '-c', commit,
-    #         '-f', ','.join(file_paths)
-    #     ]
-    #
-    #     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-    #     if not result:
-    #         return []
-    #     else:
-    #         return json.loads(result.stdout)
-
     @staticmethod
     def extract_content_ast_mapping(old_content: str, new_content: str, algorithm: str = 'gt'):
         if platform.system() == 'Windows':
@@ -101,7 +78,7 @@ class NASZZ(RASZZ):
         if not result:
             return []
         else:
-            return json.loads(result.stdout)
+            return json.loads(result.stdout)['statementMappings']
 
     @staticmethod
     def extract_file_def_use(source: str):
@@ -223,27 +200,50 @@ class NASZZ(RASZZ):
         :return suspicious_lines
         """
         parser = JavaParser()
-        # Get all functions in this file
-        function_and_positions = parser.parse_functions(source_after)
 
-        # Remove functions which were not modified
-        modified_lines_in_functions = set()
-        for func, line_range in function_and_positions.items():
-            function_modified = False
-            for line in imp_file.modified_lines:
-                if line_range[0] <= line <= line_range[1]:
-                    function_modified = True
-                    modified_lines_in_functions.add(line)
-            if not function_modified:
-                del function_and_positions[func]
-
+        # Get AST mapping result
         log.info(f'Running AST Mapping')
         ast_mapping_result = self.extract_content_ast_mapping(source_before, source_after)
+        old_to_new_line_mapping = defaultdict(set)
+        new_to_old_line_mapping = defaultdict(set)
 
+        for stmt_mapping in ast_mapping_result:
+            old_line = stmt_mapping['oldStmtStartLine']
+            new_line = stmt_mapping['newStmtStartLine']
+            old_to_new_line_mapping[old_line].add(new_line)
+            new_to_old_line_mapping[new_line].add(old_line)
+
+        # Get all functions in this file
+        functions = parser.parse_functions(source_after)
+        modified_functions = []
+
+        # Remove functions which were not modified
+        modified_lines_in_functions = []
+        for func in functions:
+            modified = False
+            for line in imp_file.modified_lines:
+                if func.start_line <= line <= func.end_line:
+                    modified = True
+                    modified_lines_in_functions.append(line)
+            if modified:
+                modified_functions.append(func)
+
+        # For each modified function, try to find its previous version
         suspicious_lines = set()
+        old_functions = parser.parse_functions(source_before)
 
-        log.info(f'Running TinyPDG')
-        def_use_result_before = self.extract_file_def_use(source_before)
-        def_use_result_after = self.extract_file_def_use(source_after)
+        for func in modified_functions:
+            old_start_line = new_to_old_line_mapping.get(func.start_line)
+            matched_function = filter(lambda f: f.start_line in old_start_line, old_functions)
+            if not matched_function:
+                continue
+            matched_function = next(matched_function)
+            self._analyze_function_change(matched_function, func)
+
 
         return suspicious_lines
+
+    def _analyze_function_change(self, old_function: Function, new_function: Function):
+        log.info(f'Running TinyPDG')
+        def_use_result_before = self.extract_file_def_use(function.source)
+        # def_use_result_after = self.extract_file_def_use(source_after)

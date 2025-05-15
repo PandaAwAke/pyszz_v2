@@ -36,7 +36,8 @@ class AbstractSZZ(ABC):
         self._repository = None
 
         os.makedirs(Options.TEMP_WORKING_DIR, exist_ok=True)
-        self.__temp_dir = mkdtemp(dir=os.path.join(os.getcwd(), Options.TEMP_WORKING_DIR))
+        self.__temp_dir = os.path.join(os.getcwd(), Options.TEMP_WORKING_DIR)
+        # self.__temp_dir = mkdtemp(dir=os.path.join(os.getcwd(), Options.TEMP_WORKING_DIR))
         self._repository_path = os.path.join(self.__temp_dir, repo_full_name.replace('/', '_'))
         if not os.path.isdir(self._repository_path):
             if repos_dir:
@@ -261,8 +262,9 @@ class AbstractSZZ(ABC):
 
     def __cleanup_repo(self):
         """ Cleanup of local repository used by SZZ """
-        if os.path.isdir(self.__temp_dir):
-            rmtree(self.__temp_dir)
+        # if os.path.isdir(self.__temp_dir):
+        #     rmtree(self.__temp_dir)
+        pass
 
     def __clear_gitpython(self):
         """ Cleanup of GitPython due to memory problems """

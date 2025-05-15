@@ -2,6 +2,7 @@
 import sys
 import os
 
+from szz.core.abstract_szz import ImpactedFile
 from szz.naszz.na_szz import NASZZ
 
 # insert at 1, 0 is the script path (or '' in REPL)
@@ -26,7 +27,26 @@ def extract_method_history_test():
 #                                               'a30cb8e263300855d4d38710f7d5d9b61223c98f',
 #                                               ['activemq-kahadb-store/src/main/java/org/apache/activemq/store/kahadb/disk/page/PageFile.java'])
 #     print(r)
-#
+
+
+def extract_content_ast_mapping_test():
+    r = NASZZ.extract_content_ast_mapping(
+        """public class Test {
+        //test
+    public String bar(int k) {
+        if (k > 0) return "bar";
+    }
+
+    public void foo(){ }
+}""",
+        """public class Test {
+    private String bar (int k){
+        if (k > 0) return "foo";
+        else if (k == 0) return "bar";
+    }
+}"""
+    )
+    print(r)
 
 
 def extract_file_def_use_test():
@@ -36,8 +56,35 @@ def extract_file_def_use_test():
         print(r)
 
 
+def test_na_szz():
+    szz = NASZZ('activemq', '', r"E:\github\vulnerable-analysis")
+    szz._select_suspicious_lines(
+        ImpactedFile(None, [3], None),
+        """public class Test {
+        @Override
+    public String
+     bar(int k) {
+        if (k > 0) return "bar";
+    }
+
+    public void foo(){ }
+}""",
+        """public class Test {
+        @Override
+    private String
+     bar (int k){
+        if (k > 0) return "foo";
+        else if (k == 0) return "bar";
+    }
+}"""
+    )
+
+
 if __name__ == '__main__':
     # extract_method_history_test()
     # extract_commit_file_ast_mapping_test()
-    extract_file_def_use_test()
+    # extract_content_ast_mapping_test()
+    # extract_file_def_use_test()
+
+    test_na_szz()
     print("+++ Test passed +++")

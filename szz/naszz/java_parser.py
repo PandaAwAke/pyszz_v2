@@ -7,15 +7,17 @@ from javalang.tree import MethodDeclaration
 class JavaParser:
 
     def _parse_function_position(self, file_source: str, method: MethodDeclaration):
-        start_pos = method.position
-        end_pos = None
+        start_line = method.position.line
+        if method.annotations:
+            start_line = min(start_line, min(map(lambda anno: anno.position.line, method.annotations)))
 
         # Find the end position
         lines = file_source.split('\n')
         brace_count = 0
         found_start = False
 
-        for i in range(start_pos.line - 1, len(lines)):
+        end_line = None
+        for i in range(start_line - 1, len(lines)):
             line = lines[i]
             if not found_start and '{' in line:
                 found_start = True
@@ -25,11 +27,11 @@ class JavaParser:
                 brace_count -= line.count('}')
 
                 if brace_count == 0:
-                    end_pos = javalang.tokenizer.Position(i + 1, len(line))
+                    end_line = i + 1
                     break
 
-        if end_pos:
-            return start_pos.line, end_pos.line
+        if end_line:
+            return start_line, end_line
         return None
 
     def parse_functions(self, file_source: str) -> List['Function']:
