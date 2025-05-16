@@ -3,6 +3,8 @@ from typing import List
 import javalang
 from javalang.tree import MethodDeclaration
 
+from szz.naszz.function import Function
+
 
 class JavaParser:
 
@@ -69,35 +71,3 @@ class JavaParser:
             ))
 
         return functions
-
-
-class Function:
-
-    FUNCTION_WRAPPER_PREFIX = 'class UNKNOWN {\n'
-    FUNCTION_WRAPPER_SUFFIX = '\n}'
-
-    def __init__(self, name: str, signature: str, is_constructor: bool, source: str, start_line: int, end_line: int):
-        self.name = name
-        self.signature = signature
-        self.is_constructor = is_constructor
-        self.source = source
-        self.start_line = start_line
-        self.end_line = end_line
-
-    def get_body_source(self):
-        if hasattr(self, 'body_source'):
-            return getattr(self, 'body_source')
-
-        body_start = self.source.find('{')
-        if body_start != -1:
-            # signature_part = self.source[:body_start].strip()
-            body_part = self.source[body_start:]
-        else:
-            # signature_part = self.signature
-            body_part = ""
-
-        self.body_source = body_part
-        return body_part
-
-    def get_wrapped_source(self):
-        return self.FUNCTION_WRAPPER_PREFIX + self.source + self.FUNCTION_WRAPPER_SUFFIX

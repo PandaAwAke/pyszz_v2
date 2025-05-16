@@ -7,11 +7,13 @@ import tempfile
 from collections import defaultdict
 from typing import Set, List
 
+import networkx as nx
 from git import Commit
 
 from options import Options
 from szz.core.abstract_szz import DetectLineMoved, LineChangeType, ImpactedFile
-from szz.naszz.java_parser import JavaParser, Function
+from szz.naszz.function import Function
+from szz.naszz.java_parser import JavaParser
 from szz.ra_szz import RASZZ
 
 SUPPORTED_FILE_EXT = ['.java']
@@ -220,13 +222,13 @@ class NASZZ(RASZZ):
         modified_functions = []
 
         # Remove functions which were not modified
-        modified_lines_in_functions = []
+        modified_lines_in_functions = defaultdict(list)
         for func in functions:
             modified = False
             for line in imp_file.modified_lines:
                 if func.start_line <= line <= func.end_line:
                     modified = True
-                    modified_lines_in_functions.append(line)
+                    modified_lines_in_functions[func].append(line)
             if modified:
                 modified_functions.append(func)
 
@@ -236,16 +238,38 @@ class NASZZ(RASZZ):
 
         for func in modified_functions:
             old_start_line = new_to_old_line_mapping.get(func.start_line)
-            matched_function = filter(lambda f: f.start_line in old_start_line, old_functions)
-            if not matched_function:
+            old_func = filter(lambda f: f.start_line in old_start_line, old_functions)
+            if not old_func:
                 continue
-            matched_function = next(matched_function)
-            self._analyze_function_change(matched_function, func)
-
+            old_func = next(old_func)
+            self._analyze_function_change(old_func, func, modified_lines_in_functions[func])
 
         return suspicious_lines
 
-    def _analyze_function_change(self, old_function: Function, new_function: Function):
+    def _analyze_function_change(self, old_function: Function, new_function: Function,
+                                 modified_lines: List[int]):
         log.info(f'Running TinyPDG')
-        def_use_result_before = self.extract_file_def_use(function.source)
-        # def_use_result_after = self.extract_file_def_use(source_after)
+        def_use_result_before: dict = self.extract_file_def_use(old_function.get_wrapped_source())
+        def_use_result_after: dict = self.extract_file_def_use(new_function.get_wrapped_source())
+
+        def_use_result_before = next(iter(def_use_result_before.values()))['variableJsons']
+        def_use_result_after = next(iter(def_use_result_after.values()))['variableJsons']
+
+        edges = set()
+
+        line_var_def = defaultdict(set)
+        line_var_use = defaultdict(set)
+        for varDefUse in def_use_result_before:
+            name = varDefUse['name']
+            def_lines = varDefUse['defStmtLineNumbers']
+            use_lines = varDefUse['useStmtLineNumbers']
+            for line in def_lines:
+                line_var_def[line].add(name)
+            for line in use_lines:
+                line_var_use[line].add(name)
+
+            # edges.add((def_line, v))
+
+        G = nx.DiGraph()
+        G.add_edges_from(edges)
+        G.remove_edges_from(list(nx.selfloop_edges(G)))
