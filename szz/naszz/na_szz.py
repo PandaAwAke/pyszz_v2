@@ -210,8 +210,10 @@ class NASZZ(RASZZ):
         for stmt_mapping in ast_mapping_result:
             old_line = stmt_mapping['oldStmtStartLine']
             new_line = stmt_mapping['newStmtStartLine']
-            old_to_new_line_mapping[old_line].add(new_line)
-            new_to_old_line_mapping[new_line].add(old_line)
+            if new_line != -1:
+                old_to_new_line_mapping[old_line].add(new_line)
+            if old_line != -1:
+                new_to_old_line_mapping[new_line].add(old_line)
 
         # Get all functions in this file
         functions = parser.parse_functions(source_after)

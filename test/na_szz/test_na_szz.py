@@ -32,7 +32,9 @@ def extract_method_history_test():
 def extract_content_ast_mapping_test():
     r = NASZZ.extract_content_ast_mapping(
         """public class Test {
-        //test
+        /**
+            Java doc
+        */
     public String bar(int k) {
         if (k > 0) return "bar";
     }
@@ -61,6 +63,9 @@ def test_na_szz():
     szz._select_suspicious_lines(
         ImpactedFile(None, [3], None),
         """public class Test {
+        /**
+            Java doc
+        */
         @Override
     public String
      bar(int k) {
