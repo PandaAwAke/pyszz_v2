@@ -248,18 +248,17 @@ class NASZZ(RASZZ):
 
     def _analyze_function_change(self, old_function: Function, new_function: Function,
                                  modified_lines: List[int]):
+        pass
+
+    def _analyze_function_dependency_graph(self, func: Function):
         log.info(f'Running TinyPDG')
-        def_use_result_before: dict = self.extract_file_def_use(old_function.get_wrapped_source())
-        def_use_result_after: dict = self.extract_file_def_use(new_function.get_wrapped_source())
-
-        def_use_result_before = next(iter(def_use_result_before.values()))['variableJsons']
-        def_use_result_after = next(iter(def_use_result_after.values()))['variableJsons']
-
-        edges = set()
+        def_use_result: dict = self.extract_file_def_use(func.get_wrapped_source())
+        def_use_result = next(iter(def_use_result.values()))['variableJsons']
 
         line_var_def = defaultdict(set)
         line_var_use = defaultdict(set)
-        for varDefUse in def_use_result_before:
+
+        for varDefUse in def_use_result:
             name = varDefUse['name']
             def_lines = varDefUse['defStmtLineNumbers']
             use_lines = varDefUse['useStmtLineNumbers']
@@ -268,7 +267,15 @@ class NASZZ(RASZZ):
             for line in use_lines:
                 line_var_use[line].add(name)
 
-            # edges.add((def_line, v))
+        node_and_s = {}
+        edges = set()
+
+        for line, def_vars in line_var_def.items():
+            for def_var in def_vars:
+                if line in line_var_use.keys():
+                    use_vars = line_var_use[line]
+                    for use_var in use_vars:
+
 
         G = nx.DiGraph()
         G.add_edges_from(edges)
