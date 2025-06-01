@@ -3,10 +3,11 @@ import json
 import os
 import logging as log
 import platform
-from queue import Queue
+from collections import deque
 import subprocess
 import tempfile
 from collections import defaultdict
+from functools import reduce
 from typing import Set, List, Tuple
 from ordered_set import OrderedSet
 
@@ -258,8 +259,8 @@ class NASZZ(RASZZ):
 
         return suspicious_lines
 
-    def _analyze_function_change(self, old_function: Function, new_function: Function,
-                                 modified_lines: List[int]) -> Set[int]:
+    @staticmethod
+    def analyze_function_change(old_function: Function, new_function: Function, modified_lines: List[int]) -> Set[int]:
         """
         The main place to analyze suspicious lines from the function change (usually added lines).
         Args:
@@ -270,11 +271,11 @@ class NASZZ(RASZZ):
         Returns:
             Suspicious lines of this function (a set of line numbers)
         """
-        G_old, _, _ = self.analyze_function_dependency_graph(old_function)
-        G_new, def_new, _ = self.analyze_function_dependency_graph(new_function)
+        G_old, _, _ = NASZZ.analyze_function_dependency_graph(old_function)
+        G_new, def_new, _ = NASZZ.analyze_function_dependency_graph(new_function)
 
         # Calculate difference graph
-        G_diff = self.calculate_diff_graph(G_new, G_old)
+        G_diff = NASZZ.calculate_diff_graph(G_new, G_old)
 
         # Get the nodes of the graph (used as auxiliaries)
         nodes_old = OrderedSet(G_old.nodes())
@@ -286,13 +287,10 @@ class NASZZ(RASZZ):
         suspicious_var_names = set()
 
         # Case 1: For every leaf (exclusive), traverse up to find the first variable which exists in G_old
-        q = Queue()
-        for name in leaf_variable_names:
-            q.put(name)
-
+        q = deque(leaf_variable_names)
         visited_var_names = OrderedSet()
-        while not q.empty():
-            var_name = q.get()
+        while len(q) > 0:
+            var_name = q.pop()
             visited_var_names.add(var_name)
 
             in_edges = G_diff.in_edges(var_name)
@@ -301,12 +299,17 @@ class NASZZ(RASZZ):
                 if pre_var_name in nodes_old:
                     suspicious_var_names.add(pre_var_name)
                 elif pre_var_name not in visited_var_names and pre_var_name not in q:
-                    q.put(pre_var_name)
+                    q.appendleft(pre_var_name)
 
         # Case 2: For every changed var in new lines, if it doesn't exist in G_diff,
         #         but it exists in G_old, then it was suspicious
         # Get changed variables by `modified_lines`
-        new_line_changed_var_names = set([var.name for line, var in def_new.items() if line in modified_lines])
+        new_line_changed_var_names = set()
+        for line, vars in def_new.items():
+            if line in modified_lines:
+                for var in vars:
+                    new_line_changed_var_names.add(var.name)
+
         for name in new_line_changed_var_names:
             if name in nodes_diff:
                 continue

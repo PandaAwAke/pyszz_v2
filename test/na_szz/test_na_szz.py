@@ -112,6 +112,56 @@ public abstract class BaseDataStreamMarshaller implements DataStreamMarshaller {
         print(G.edges())
 
 
+def test_analyze_function_change():
+    parser = JavaParser()
+
+    source_old = """import org.apache.activemq.openwire.OpenWireUtil;
+
+        public abstract class BaseDataStreamMarshaller implements DataStreamMarshaller {
+
+            private static final int MAX_EXCEPTION_MESSAGE_SIZE = 1024;
+
+            private Throwable createThrowable(String className, String message) {
+                try {
+                    Class clazz = Class.forName(className, false, BaseDataStreamMarshaller.class.getClassLoader());
+                    Constructor constructor = clazz.getConstructor(new Class[] {String.class});
+                    return (Throwable)constructor.newInstance(new Object[] {message});
+                } catch (Throwable e) {
+                    return new Throwable(className + ": " + message);
+                }
+            }
+        }
+        """
+
+    source_new = """import org.apache.activemq.openwire.OpenWireFormat;
+        import org.apache.activemq.openwire.OpenWireUtil;
+
+        public abstract class BaseDataStreamMarshaller implements DataStreamMarshaller {
+
+            public static final Constructor STACK_TRACE_ELEMENT_CONSTRUCTOR;
+            private static final int MAX_EXCEPTION_MESSAGE_SIZE = 1024;
+
+            private Throwable createThrowable(String className, String message) {
+                try {
+                    Class clazz = Class.forName(className, false, BaseDataStreamMarshaller.class.getClassLoader());
+                    OpenWireUtil.validateIsThrowable(clazz);
+                    Constructor constructor = clazz.getConstructor(new Class[] {String.class});
+                    return (Throwable)constructor.newInstance(new Object[] {message});
+                } catch (IllegalArgumentException e) {
+                    return e;
+                } catch (Throwable e) {
+                    return new Throwable(className + ": " + message);
+                }
+            }
+        }
+        """
+
+    functions_old = parser.parse_functions(source_old)[0]
+    functions_new = parser.parse_functions(source_new)[0]
+    result = NASZZ.analyze_function_change(functions_old, functions_new, [12, 15, 16])
+    print(result)
+
+
 def test_na_szz():
     szz = NASZZ('activemq', '', r"E:\github\vulnerable-analysis")
     szz._select_suspicious_lines(
@@ -144,6 +194,8 @@ if __name__ == '__main__':
     # test_extract_commit_file_ast_mapping()
     # test_extract_content_ast_mapping()
     # test_extract_file_def_use()
-    test_analyze_function_dependency_graph()
+    # test_analyze_function_dependency_graph()
+    test_analyze_function_change()
+
     # test_na_szz()
     print("+++ Test passed +++")
