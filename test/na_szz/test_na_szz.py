@@ -3,6 +3,7 @@ import sys
 import os
 
 from szz.core.abstract_szz import ImpactedFile
+from szz.naszz.java_parser import JavaParser
 from szz.naszz.na_szz import NASZZ
 
 # insert at 1, 0 is the script path (or '' in REPL)
@@ -12,7 +13,7 @@ sys.path.insert(1, os.path.abspath("../../"))
 # szz = NASZZ("activemq", None, r"E:\github\vulnerable-analysis")
 
 
-def extract_method_history_test():
+def test_extract_method_history():
     r = NASZZ.extract_method_history(r"E:\github\vulnerable-analysis\activemq",
                                      '2cc17a2fa06b86fef58bd26141d29bb5cb0d715d',
                                      'activemq-client/src/main/java/org/apache/activemq/openwire/v1/BaseDataStreamMarshaller.java',
@@ -21,7 +22,7 @@ def extract_method_history_test():
     print(r)
 
 
-# def extract_commit_file_ast_mapping_test():
+# def test_extract_commit_file_ast_mapping():
 #     r = NASZZ.extract_commit_file_ast_mapping(r"E:\github\vulnerable-analysis",
 #                                               'activemq',
 #                                               'a30cb8e263300855d4d38710f7d5d9b61223c98f',
@@ -29,7 +30,7 @@ def extract_method_history_test():
 #     print(r)
 
 
-def extract_content_ast_mapping_test():
+def test_extract_content_ast_mapping():
     r = NASZZ.extract_content_ast_mapping(
         """public class Test {
         /**
@@ -51,11 +52,64 @@ def extract_content_ast_mapping_test():
     print(r)
 
 
-def extract_file_def_use_test():
+def test_extract_file_def_use():
     with open(r'E:\github\TinyPDG\test.txt', mode='r') as f:
         content = f.read()
         r = NASZZ.extract_file_def_use(content)
         print(r)
+
+
+def test_analyze_function_dependency_graph():
+    parser = JavaParser()
+
+    source = """
+import org.apache.activemq.openwire.OpenWireFormat;
+import org.apache.activemq.openwire.OpenWireUtil;
+import org.apache.activemq.util.ByteSequence;
+
+public abstract class BaseDataStreamMarshaller implements DataStreamMarshaller {
+
+    public static final Constructor STACK_TRACE_ELEMENT_CONSTRUCTOR;
+    private static final int MAX_EXCEPTION_MESSAGE_SIZE = 1024;
+
+    static {
+        Constructor constructor = null;
+        try {
+            constructor = StackTraceElement.class.getConstructor(new Class[] {String.class, String.class,
+                                                                              String.class, int.class});
+        } catch (Throwable e) {
+        }
+        STACK_TRACE_ELEMENT_CONSTRUCTOR = constructor;
+    }
+    
+    public int tightMarshal1(OpenWireFormat wireFormat, Object o, BooleanStream bs) throws IOException {
+        return 0;
+    }
+
+    public void tightMarshal2(OpenWireFormat wireFormat, Object o, DataOutput dataOut, BooleanStream bs)
+        throws IOException {
+    }
+    
+    private Throwable createThrowable(String className, String message) {
+        try {
+            Class clazz = Class.forName(className, false, BaseDataStreamMarshaller.class.getClassLoader());
+            OpenWireUtil.validateIsThrowable(clazz);
+            Constructor constructor = clazz.getConstructor(new Class[] {String.class});
+            return (Throwable)constructor.newInstance(new Object[] {message});
+        } catch (IllegalArgumentException e) {
+            return e;
+        } catch (Throwable e) {
+            return new Throwable(className + ": " + message);
+        }
+    }
+}
+"""
+    functions = parser.parse_functions(source)
+    assert len(functions) == 3
+
+    for func in functions:
+        G = NASZZ.analyze_function_dependency_graph(func)
+        print(G.edges)
 
 
 def test_na_szz():
@@ -86,10 +140,10 @@ def test_na_szz():
 
 
 if __name__ == '__main__':
-    # extract_method_history_test()
-    # extract_commit_file_ast_mapping_test()
-    # extract_content_ast_mapping_test()
-    # extract_file_def_use_test()
-
-    test_na_szz()
+    # test_extract_method_history()
+    # test_extract_commit_file_ast_mapping()
+    # test_extract_content_ast_mapping()
+    # test_extract_file_def_use()
+    test_analyze_function_dependency_graph()
+    # test_na_szz()
     print("+++ Test passed +++")

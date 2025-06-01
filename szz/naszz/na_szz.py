@@ -1,11 +1,14 @@
+import hashlib
 import json
 import os
 import logging as log
 import platform
+from queue import Queue
 import subprocess
 import tempfile
 from collections import defaultdict
-from typing import Set, List
+from typing import Set, List, Tuple
+from ordered_set import OrderedSet
 
 import networkx as nx
 from git import Commit
@@ -203,7 +206,7 @@ class NASZZ(RASZZ):
         """
         parser = JavaParser()
 
-        # Get AST mapping result
+        # 1: Get AST mapping result
         log.info(f'Running AST Mapping')
         ast_mapping_result = self.extract_content_ast_mapping(source_before, source_after)
         old_to_new_line_mapping = defaultdict(set)
@@ -217,11 +220,11 @@ class NASZZ(RASZZ):
             if old_line != -1:
                 new_to_old_line_mapping[new_line].add(old_line)
 
-        # Get all functions in this file
+        # 2: Get all functions in this file
         functions = parser.parse_functions(source_after)
         modified_functions = []
 
-        # Remove functions which were not modified
+        # 3: Remove functions which were not modified
         modified_lines_in_functions = defaultdict(list)
         for func in functions:
             modified = False
@@ -232,51 +235,194 @@ class NASZZ(RASZZ):
             if modified:
                 modified_functions.append(func)
 
-        # For each modified function, try to find its previous version
+        # 4: For each modified function, try to find its previous version
         suspicious_lines = set()
         old_functions = parser.parse_functions(source_before)
+        function_mapping = []
 
         for func in modified_functions:
-            old_start_line = new_to_old_line_mapping.get(func.start_line)
-            old_func = filter(lambda f: f.start_line in old_start_line, old_functions)
+            old_start_lines = new_to_old_line_mapping.get(func.start_line)
+            old_func = filter(lambda f: f.start_line in old_start_lines, old_functions)
             if not old_func:
                 continue
             old_func = next(old_func)
-            self._analyze_function_change(old_func, func, modified_lines_in_functions[func])
+            function_mapping.append((old_func, func))
+
+        # 5: For each modified function, analyze its function change
+        for old_func, new_func in function_mapping:
+            self._analyze_function_change(old_func, new_func, modified_lines_in_functions[new_func])
 
         return suspicious_lines
 
     def _analyze_function_change(self, old_function: Function, new_function: Function,
-                                 modified_lines: List[int]):
-        pass
+                                 modified_lines: List[int]) -> Set[int]:
+        """
+        The main place to analyze suspicious lines from the function change (usually added lines).
+        Args:
+            old_function: The old function (before the commit)
+            new_function: The new function (after the commit)
+            modified_lines: Modified lines (usually added lines in the original file after the commit)
 
-    def _analyze_function_dependency_graph(self, func: Function):
+        Returns:
+            Suspicious lines of this function (a set of line numbers)
+        """
+        G_old, _, _ = self.analyze_function_dependency_graph(old_function)
+        G_new, def_new, _ = self.analyze_function_dependency_graph(new_function)
+
+        # Calculate difference graph
+        G_diff = self.calculate_diff_graph(G_new, G_old)
+
+        # Get the nodes of the graph (used as auxiliaries)
+        nodes_old = OrderedSet(G_old.nodes())
+        nodes_diff = OrderedSet(G_diff.nodes())
+
+        # Get leaf variables
+        leaf_variable_names = [name for name in G_diff.nodes() if G_diff.out_degree(name) == 0]
+
+        suspicious_var_names = set()
+
+        # Case 1: For every leaf (exclusive), traverse up to find the first variable which exists in G_old
+        q = Queue()
+        for name in leaf_variable_names:
+            q.put(name)
+
+        visited_var_names = OrderedSet()
+        while not q.empty():
+            var_name = q.get()
+            visited_var_names.add(var_name)
+
+            in_edges = G_diff.in_edges(var_name)
+            for edge in in_edges:
+                pre_var_name = edge[0]
+                if pre_var_name in nodes_old:
+                    suspicious_var_names.add(pre_var_name)
+                elif pre_var_name not in visited_var_names and pre_var_name not in q:
+                    q.put(pre_var_name)
+
+        # Case 2: For every changed var in new lines, if it doesn't exist in G_diff,
+        #         but it exists in G_old, then it was suspicious
+        # Get changed variables by `modified_lines`
+        new_line_changed_var_names = set([var.name for line, var in def_new.items() if line in modified_lines])
+        for name in new_line_changed_var_names:
+            if name in nodes_diff:
+                continue
+            if name not in nodes_old:
+                continue
+            suspicious_var_names.add(name)
+
+        # Case 3: Cycles (including self-cycles) in G_diff were suspicious
+        cycles = nx.simple_cycles(G_diff)
+        for cycle in cycles:
+            for name in cycle:
+                if name not in nodes_old:
+                    continue
+                suspicious_var_names.add(name)
+
+        # For every suspicious var, its defs and uses were suspicious
+        suspicious_lines = set()
+        for name in suspicious_var_names:
+            for use_edge in G_old.in_edges(name):
+                suspicious_lines.update(G_old.get_edge_data(use_edge[0], name)['lines'])
+            for def_edge in G_old.out_edges(name):
+                suspicious_lines.update(G_old.get_edge_data(name, def_edge[1])['lines'])
+
+        return suspicious_lines
+
+
+    @staticmethod
+    def analyze_function_dependency_graph(func: Function) -> Tuple[nx.DiGraph, defaultdict, defaultdict]:
+        """
+        Analyze the variable dependency graph of a function.
+        Args:
+            func: The function to analyze
+
+        Returns: (G, D, U)
+            G: The dependency graph (nx.DiGraph) of the function
+            D: The lines and defined variables presented as a dictionary {linenum:  {var, ...}}
+            U: The lines and used variables presented as a dictionary {linenum: {var, ...}}
+        """
         log.info(f'Running TinyPDG')
-        def_use_result: dict = self.extract_file_def_use(func.get_wrapped_source())
+        def_use_result: dict = NASZZ.extract_file_def_use(func.get_wrapped_source())
         def_use_result = next(iter(def_use_result.values()))['variableJsons']
 
+        # The line number and defined/used "variable"s.
         line_var_def = defaultdict(set)
         line_var_use = defaultdict(set)
 
         for varDefUse in def_use_result:
-            name = varDefUse['name']
+            var = Var(varDefUse['name'], varDefUse['scopeJson'])
             def_lines = varDefUse['defStmtLineNumbers']
             use_lines = varDefUse['useStmtLineNumbers']
             for line in def_lines:
-                line_var_def[line].add(name)
+                line_var_def[line].add(var)
             for line in use_lines:
-                line_var_use[line].add(name)
+                line_var_use[line].add(var)
 
-        node_and_s = {}
-        edges = set()
-
+        edge_and_lines = defaultdict(set)
         for line, def_vars in line_var_def.items():
             for def_var in def_vars:
                 if line in line_var_use.keys():
                     use_vars = line_var_use[line]
                     for use_var in use_vars:
-
+                        edge_and_lines[(def_var.name, use_var.name)].add(line)
 
         G = nx.DiGraph()
-        G.add_edges_from(edges)
-        G.remove_edges_from(list(nx.selfloop_edges(G)))
+        for edge, lines in edge_and_lines.items():
+            G.add_edge(edge[0], edge[1], lines=lines)
+
+        # G.remove_edges_from(list(nx.selfloop_edges(G)))   # Remove self-loops
+        return G, line_var_def, line_var_use
+
+    @staticmethod
+    def calculate_diff_graph(G1: nx.DiGraph, G2: nx.DiGraph) -> nx.DiGraph:
+        G = nx.DiGraph()
+        nodes1 = OrderedSet(G1.nodes())
+        nodes2 = OrderedSet(G2.nodes())
+
+        matched_nodes = OrderedSet()
+        for node in nodes1:
+            if node in nodes2:
+                matched_nodes.add(node)
+
+        matched_edges = OrderedSet()
+        for edge in G1.edges():
+            u, v = edge
+            if G2.has_edge(u, v):
+                matched_edges.add(edge)
+
+        for node in nodes1:
+            if node not in matched_nodes:
+                G.add_node(node)
+
+        for edge in G1.edges():
+            if edge not in matched_edges:
+                G.add_edge(edge[0], edge[1])
+
+        return G
+
+
+class Var:
+    def __init__(self, name: str, scope: dict | None = None):
+        self.name = name
+        self.scope = scope
+
+    def get_scope_md5(self) -> str:
+        """
+        Hash the scope info of a variable into MD5 value.
+        Args:
+            scope: None, or a dict like
+             {
+                "type" : "StatementInfo",
+                "lineNumber" : 2
+             }
+
+        Returns:
+            The MD5 value of the scope. If scope is None, return empty string
+        """
+
+        if self.scope is None:
+            return ''
+
+        json_str = json.dumps(self.scope, sort_keys=True)
+        md5_hash = hashlib.md5(json_str.encode('utf-8')).hexdigest()
+        return md5_hash
