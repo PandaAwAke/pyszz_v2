@@ -160,9 +160,12 @@ class NASZZ(RASZZ):
     def _process_impacted_files(self, fix_commit_hash: str, impacted_files: List['ImpactedFile']) -> List['ImpactedFile']:
         """
         Extract DefUseChains using added lines from impacted files.
+        Args:
+            fix_commit_hash: fix commit
+            impacted_files: impacted_files with the modified line ranges
 
-        :param impacted_files List['ImpactedFile'] impacted_files with the modified line ranges
-        :returns List['ImpactedFile'] list of impacted files with lines selected with DefUseChains
+        Returns:
+            A list of impacted files with lines selected with DefUseChains
         """
 
         def_use_imp_files = list()
@@ -197,12 +200,13 @@ class NASZZ(RASZZ):
     def _select_suspicious_lines(self, imp_file: ImpactedFile, source_before: str, source_after: str) -> Set:
         """
         Compute suspicious lines at function level from impacted lines (usually added lines)
+        Args:
+            imp_file:
+            source_before: Function source after the commit (should not be empty)
+            source_after: Function source before the commit (could be None)
 
-        :param imp_file
-        :param source_before Function source after the commit (should not be empty)
-        :param source_after Function source before the commit (could be None)
-
-        :return suspicious_lines
+        Returns:
+            suspicious_lines
         """
         parser = JavaParser()
 
@@ -351,8 +355,8 @@ class NASZZ(RASZZ):
 
         for varDefUse in def_use_result:
             var = Var(varDefUse['name'], varDefUse['scopeJson'])
-            def_lines = varDefUse['defStmtLineNumbers']
-            use_lines = varDefUse['useStmtLineNumbers']
+            def_lines = [func.transfer_wrapped_line(line) for line in varDefUse['defStmtLineNumbers']]
+            use_lines = [func.transfer_wrapped_line(line) for line in varDefUse['useStmtLineNumbers']]
             for line in def_lines:
                 line_var_def[line].add(var)
             for line in use_lines:

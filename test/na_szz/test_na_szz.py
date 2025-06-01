@@ -108,8 +108,8 @@ public abstract class BaseDataStreamMarshaller implements DataStreamMarshaller {
     assert len(functions) == 3
 
     for func in functions:
-        G = NASZZ.analyze_function_dependency_graph(func)
-        print(G.edges)
+        G, _, _ = NASZZ.analyze_function_dependency_graph(func)
+        print(G.edges())
 
 
 def test_na_szz():
