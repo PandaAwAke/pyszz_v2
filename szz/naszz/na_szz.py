@@ -7,7 +7,6 @@ from collections import deque
 import subprocess
 import tempfile
 from collections import defaultdict
-from functools import reduce
 from typing import Set, List, Tuple
 from ordered_set import OrderedSet
 
