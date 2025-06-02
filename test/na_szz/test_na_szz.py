@@ -13,6 +13,8 @@ sys.path.insert(1, os.path.abspath("../../"))
 # szz = NASZZ("activemq", None, r"E:\github\vulnerable-analysis")
 
 
+# ---------------- Static Methods ----------------
+
 def test_extract_method_history():
     r = NASZZ.extract_method_history(r"E:\github\vulnerable-analysis\activemq",
                                      '2cc17a2fa06b86fef58bd26141d29bb5cb0d715d',
@@ -20,15 +22,6 @@ def test_extract_method_history():
                                      'createThrowable',
                                      229)
     print(r)
-
-
-# def test_extract_commit_file_ast_mapping():
-#     r = NASZZ.extract_commit_file_ast_mapping(r"E:\github\vulnerable-analysis",
-#                                               'activemq',
-#                                               'a30cb8e263300855d4d38710f7d5d9b61223c98f',
-#                                               ['activemq-kahadb-store/src/main/java/org/apache/activemq/store/kahadb/disk/page/PageFile.java'])
-#     print(r)
-
 
 def test_extract_content_ast_mapping():
     r = NASZZ.extract_content_ast_mapping(
@@ -51,13 +44,11 @@ def test_extract_content_ast_mapping():
     )
     print(r)
 
-
 def test_extract_file_def_use():
     with open(r'E:\github\TinyPDG\test.txt', mode='r') as f:
         content = f.read()
         r = NASZZ.extract_file_def_use(content)
         print(r)
-
 
 def test_analyze_function_dependency_graph():
     parser = JavaParser()
@@ -111,7 +102,6 @@ public abstract class BaseDataStreamMarshaller implements DataStreamMarshaller {
         G, _, _ = NASZZ.analyze_function_dependency_graph(func)
         print(G.edges())
 
-
 def test_analyze_function_change():
     parser = JavaParser()
 
@@ -161,10 +151,11 @@ def test_analyze_function_change():
     result = NASZZ.analyze_function_change(functions_old, functions_new, [12, 15, 16])
     print(result)
 
+# ---------------- NA-SZZ ----------------
 
 def test_na_szz():
     szz = NASZZ('activemq', '', r"E:\github\vulnerable-analysis")
-    szz._select_suspicious_lines(
+    szz.select_suspicious_lines(
         ImpactedFile(None, [3], None),
         """public class Test {
         /**

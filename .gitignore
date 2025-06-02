@@ -183,3 +183,5 @@ modules.xml
 
 temp/
 __pycache__
+/test/_szztemp/
+.venv/

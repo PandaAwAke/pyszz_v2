@@ -1,6 +1,8 @@
 import json
 import logging as log
 import os
+import platform
+import subprocess
 import tempfile
 from typing import List, Set
 
@@ -26,15 +28,21 @@ class RASZZ(MASZZ):
         super().__init__(repo_full_name, repo_url, repos_dir)
 
     def _extract_refactorings(self, commits):
-        PATH_TO_REFMINER = os.path.join(Options.PYSZZ_HOME, 'tools/RefactoringMiner-2.0/bin/RefactoringMiner')
+        if platform.system() == 'Windows':
+            PATH_TO_REFMINER = os.path.join(Options.PYSZZ_HOME, 'tools/RefactoringMiner-2.0/bin/RefactoringMiner.bat')
+        else:
+            PATH_TO_REFMINER = os.path.join(Options.PYSZZ_HOME, 'tools/RefactoringMiner-2.0/bin/RefactoringMiner')
 
         refactorings = dict()
         for commit in commits:
             if not commit in refactorings:
-                with tempfile.NamedTemporaryFile(mode='r+') as tmpfile:
-                    log.info(f'Running RefMiner on {commit}')
-                    os.system(f'"{PATH_TO_REFMINER}" -c "{self._repository_path}" {commit} > {tmpfile.name}')
-                    refactorings[commit] = json.loads(tmpfile.read())
+                log.info(f'Running RefMiner on {commit}')
+                cmd = [PATH_TO_REFMINER, '-c', self._repository_path, commit]
+                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+                if not result:
+                    return None
+                else:
+                    return json.loads(result.stdout)
 
         return refactorings
 

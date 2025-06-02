@@ -188,7 +188,7 @@ class NASZZ(RASZZ):
                     # This is an introduced change, or some other errors occurred
                     continue
 
-                lines_to_blame = self._select_suspicious_lines(imp_file, source_file_content_before, source_file_content_after)
+                lines_to_blame = NASZZ.select_suspicious_lines(imp_file, source_file_content_before, source_file_content_after)
                 log.info(f"added lines to blame={lines_to_blame} for file={imp_file.file_path}")
                 if lines_to_blame:
                     def_use_imp_files.append(ImpactedFile(imp_file.file_path, list(lines_to_blame), None))
@@ -197,7 +197,8 @@ class NASZZ(RASZZ):
 
         return def_use_imp_files
 
-    def _select_suspicious_lines(self, imp_file: ImpactedFile, source_before: str, source_after: str) -> Set:
+    @staticmethod
+    def select_suspicious_lines(imp_file: ImpactedFile, source_before: str, source_after: str) -> Set:
         """
         Compute suspicious lines at function level from impacted lines (usually added lines)
         Args:
@@ -212,15 +213,15 @@ class NASZZ(RASZZ):
 
         # 1: Get AST mapping result
         log.info(f'Running AST Mapping')
-        ast_mapping_result = self.extract_content_ast_mapping(source_before, source_after)
-        old_to_new_line_mapping = defaultdict(set)
+        ast_mapping_result = NASZZ.extract_content_ast_mapping(source_before, source_after)
+        # old_to_new_line_mapping = defaultdict(set)
         new_to_old_line_mapping = defaultdict(set)
 
         for stmt_mapping in ast_mapping_result:
             old_line = stmt_mapping['oldStmtStartLine']
             new_line = stmt_mapping['newStmtStartLine']
-            if new_line != -1:
-                old_to_new_line_mapping[old_line].add(new_line)
+            # if new_line != -1:
+            #     old_to_new_line_mapping[old_line].add(new_line)
             if old_line != -1:
                 new_to_old_line_mapping[new_line].add(old_line)
 
@@ -254,7 +255,7 @@ class NASZZ(RASZZ):
 
         # 5: For each modified function, analyze its function change
         for old_func, new_func in function_mapping:
-            self._analyze_function_change(old_func, new_func, modified_lines_in_functions[new_func])
+            NASZZ.analyze_function_change(old_func, new_func, modified_lines_in_functions[new_func])
 
         return suspicious_lines
 
@@ -376,7 +377,6 @@ class NASZZ(RASZZ):
         for edge, lines in edge_and_lines.items():
             G.add_edge(edge[0], edge[1], lines=lines)
 
-        # G.remove_edges_from(list(nx.selfloop_edges(G)))   # Remove self-loops
         return G, line_var_def, line_var_use
 
     @staticmethod
