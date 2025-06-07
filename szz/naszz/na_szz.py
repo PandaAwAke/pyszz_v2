@@ -7,7 +7,7 @@ from collections import deque
 import subprocess
 import tempfile
 from collections import defaultdict
-from typing import Set, List, Tuple
+from typing import Set, List, Tuple, Dict
 from ordered_set import OrderedSet
 
 import networkx as nx
@@ -31,6 +31,7 @@ class NASZZ(RASZZ):
         self.repo_full_name = repo_full_name
         self.repos_dir = repos_dir
         super().__init__(repo_full_name, repo_url, repos_dir)
+
 
     @staticmethod
     def extract_method_history(repository_path: str, commit: str,
@@ -109,7 +110,83 @@ class NASZZ(RASZZ):
         else:
             return json.loads(result.stdout)
 
+    def _blame(self,
+               rev: str,
+               file_path: str,
+               modified_lines: List[int],
+               skip_comments: bool = False,
+               ignore_revs_list: List[str] = None,
+               ignore_revs_file_path: str = None,
+               ignore_whitespaces: bool = False,
+               detect_move_within_file: bool = False,
+               detect_move_from_other_files: 'DetectLineMoved' = None
+               ) -> Set['BlameData']:
+        # TODO: change this function
+
+        log.info("Running super-blame")
+        candidate_blame_data = super()._blame(
+            rev,
+            file_path,
+            modified_lines,
+            skip_comments,
+            ignore_revs_list,
+            ignore_revs_file_path,
+            ignore_whitespaces,
+            detect_move_within_file,
+            detect_move_from_other_files
+        )
+
+
+
+        commits = set([blame.commit.hexsha for blame in candidate_blame_data])
+        refactorings = self._extract_refactorings(commits)
+
+        to_reblame = dict()
+        result_blame_data = set()
+        for blame in candidate_blame_data:
+            can_add = True
+            for refactoring in self.__read_refactorings_for_commit(blame.commit.hexsha, refactorings):
+                for location in refactoring['rightSideLocations']:
+                    file_path = location['filePath']
+                    from_line = location['startLine']
+                    to_line   = location['endLine']
+
+                    if blame.file_path == file_path and blame.line_num >= from_line and blame.line_num <= to_line and blame.commit.hexsha not in ignore_revs_list:
+                        log.info(f'Ignoring {blame.file_path} line {blame.line_num} (refactoring {refactoring["type"]})')
+                        commit_key = blame.commit.hexsha + "@" + blame.file_path
+                        if not commit_key in to_reblame:
+                            to_reblame[commit_key] = ReblameCandidate(blame.commit.hexsha, blame.file_path, {blame.line_num})
+                        else:
+                            to_reblame[commit_key].modified_lines.add(blame.line_num)
+                        can_add = False
+
+            if can_add:
+                result_blame_data.add(blame)
+
+        for _, reblame_candidate in to_reblame.items():
+            log.info(f'Re-blaming {reblame_candidate.file_path} @ {reblame_candidate.rev}, lines {reblame_candidate.modified_lines} because of refactoring')
+
+            new_ignore_revs_list = ignore_revs_list.copy()
+            new_ignore_revs_list.append(reblame_candidate.rev)
+
+            new_blame_results = self._blame(
+                reblame_candidate.rev,
+                reblame_candidate.file_path,
+                list(reblame_candidate.modified_lines),
+                skip_comments,
+                new_ignore_revs_list,
+                ignore_revs_file_path,
+                ignore_whitespaces,
+                detect_move_within_file,
+                detect_move_from_other_files
+            )
+
+            result_blame_data.update(new_blame_results)
+
+        return result_blame_data
+
     def start(self, fix_commit_hash: str, commit_issue_date, **kwargs) -> Set[Commit]:
+        # TODO: change this function
         file_ext_to_parse = kwargs.get('file_ext_to_parse')
         only_deleted_lines = False
         ignore_revs_file_path = kwargs.get('ignore_revs_file_path')
@@ -188,7 +265,7 @@ class NASZZ(RASZZ):
                     # This is an introduced change, or some other errors occurred
                     continue
 
-                lines_to_blame = NASZZ.select_suspicious_lines(imp_file, source_file_content_before, source_file_content_after)
+                func_suspicious_lines = NASZZ.select_suspicious_lines(imp_file, source_file_content_before, source_file_content_after)
                 log.info(f"added lines to blame={lines_to_blame} for file={imp_file.file_path}")
                 if lines_to_blame:
                     def_use_imp_files.append(ImpactedFile(imp_file.file_path, list(lines_to_blame), None))
@@ -198,7 +275,7 @@ class NASZZ(RASZZ):
         return def_use_imp_files
 
     @staticmethod
-    def select_suspicious_lines(imp_file: ImpactedFile, source_before: str, source_after: str) -> Set:
+    def select_suspicious_lines(imp_file: ImpactedFile, source_before: str, source_after: str) -> Dict[Function, Set]:
         """
         Compute suspicious lines at function level from impacted lines (usually added lines)
         Args:
@@ -207,7 +284,7 @@ class NASZZ(RASZZ):
             source_after: Function source before the commit (could be None)
 
         Returns:
-            suspicious_lines
+            suspicious_lines of each function
         """
         parser = JavaParser()
 
@@ -241,7 +318,7 @@ class NASZZ(RASZZ):
                 modified_functions.append(func)
 
         # 4: For each modified function, try to find its previous version
-        suspicious_lines = set()
+        suspicious_lines = dict()
         old_functions = parser.parse_functions(source_before)
         function_mapping = []
 
@@ -255,7 +332,8 @@ class NASZZ(RASZZ):
 
         # 5: For each modified function, analyze its function change
         for old_func, new_func in function_mapping:
-            NASZZ.analyze_function_change(old_func, new_func, modified_lines_in_functions[new_func])
+            func_suspicious_lines = NASZZ.analyze_function_change(old_func, new_func, modified_lines_in_functions[new_func])
+            suspicious_lines[new_func] = func_suspicious_lines
 
         return suspicious_lines
 
@@ -334,7 +412,6 @@ class NASZZ(RASZZ):
                 suspicious_lines.update(G_old.get_edge_data(name, def_edge[1])['lines'])
 
         return suspicious_lines
-
 
     @staticmethod
     def analyze_function_dependency_graph(func: Function) -> Tuple[nx.DiGraph, defaultdict, defaultdict]:
