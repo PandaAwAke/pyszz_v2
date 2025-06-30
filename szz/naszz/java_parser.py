@@ -3,7 +3,7 @@ from typing import List
 import javalang
 from javalang.tree import MethodDeclaration
 
-from szz.naszz.function import Function
+from szz.naszz.model.function import Function
 
 
 class JavaParser:

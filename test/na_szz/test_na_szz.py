@@ -4,6 +4,8 @@ import os
 
 from szz.core.abstract_szz import ImpactedFile
 from szz.naszz.java_parser import JavaParser
+import szz.naszz.library_utils as utils
+import szz.naszz.dependency_graph as dg
 from szz.naszz.na_szz import NASZZ
 
 # insert at 1, 0 is the script path (or '' in REPL)
@@ -16,7 +18,7 @@ sys.path.insert(1, os.path.abspath("../../"))
 # ---------------- Static Methods ----------------
 
 def test_extract_method_history():
-    r = NASZZ.extract_method_history(r"E:\github\vulnerable-analysis\activemq",
+    r = utils.extract_method_history(r"E:\github\vulnerable-analysis\activemq",
                                      '2cc17a2fa06b86fef58bd26141d29bb5cb0d715d',
                                      'activemq-client/src/main/java/org/apache/activemq/openwire/v1/BaseDataStreamMarshaller.java',
                                      'createThrowable',
@@ -24,7 +26,7 @@ def test_extract_method_history():
     print(r)
 
 def test_extract_content_ast_mapping():
-    r = NASZZ.extract_content_ast_mapping(
+    r = utils.extract_content_ast_mapping(
         """public class Test {
         /**
             Java doc
@@ -47,7 +49,7 @@ def test_extract_content_ast_mapping():
 def test_extract_file_def_use():
     with open(r'E:\github\TinyPDG\test.txt', mode='r') as f:
         content = f.read()
-        r = NASZZ.extract_file_def_use(content)
+        r = utils.extract_file_def_use(content)
         print(r)
 
 def test_analyze_function_dependency_graph():
@@ -99,7 +101,7 @@ public abstract class BaseDataStreamMarshaller implements DataStreamMarshaller {
     assert len(functions) == 3
 
     for func in functions:
-        G, _, _ = NASZZ.analyze_function_dependency_graph(func)
+        G, _, _ = dg.analyze_function_dependency_graph(func)
         print(G.edges())
 
 def test_analyze_function_change():

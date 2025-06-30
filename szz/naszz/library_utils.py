@@ -4,9 +4,14 @@ import platform
 
 import subprocess
 import tempfile
+from typing import List, Dict
 
 from options import Options
 import logging as log
+
+from szz.naszz.model.ast_mapping import ASTMapping
+from szz.naszz.model.def_use import DefUse
+from szz.naszz.model.method_history import MethodHistory
 
 
 # Modified from RASZZ
@@ -44,7 +49,7 @@ def read_refactorings_for_commit(fix_commit_hash, fix_refactorings):
 
 def extract_method_history(repository_path: str, commit: str,
                            file_path: str, method_name: str,
-                           method_declaration_line: str | int):
+                           method_declaration_line: str | int) -> List['MethodHistory']:
     if platform.system() == 'Windows':
         PATH_TO_CODE_TRACKER = os.path.join(Options.PYSZZ_HOME, 'tools/CodeTracker-2.7/bin/CodeTracker.bat')
     else:
@@ -62,12 +67,13 @@ def extract_method_history(repository_path: str, commit: str,
 
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
     if not result:
-        return {"commits": []}
+        return []
     else:
-        return json.loads(result.stdout)
+        history = json.loads(result.stdout)['commits']
+        return list(map(lambda entry: MethodHistory(entry), history))
 
 
-def extract_content_ast_mapping(old_content: str, new_content: str, algorithm: str = 'gt'):
+def extract_content_ast_mapping(old_content: str, new_content: str, algorithm: str = 'gt') -> List['ASTMapping']:
     if platform.system() == 'Windows':
         PATH_TO_AST_MAPPING = os.path.join(Options.PYSZZ_HOME, 'tools/ICSE2021AstMapping/bin/AstMapping.bat')
     else:
@@ -92,10 +98,11 @@ def extract_content_ast_mapping(old_content: str, new_content: str, algorithm: s
     if not result:
         return []
     else:
-        return json.loads(result.stdout)['statementMappings']
+        mappings = json.loads(result.stdout)['statementMappings']
+        return list(map(lambda mapping: ASTMapping(mapping), mappings))
 
 
-def extract_file_def_use(source: str):
+def extract_file_def_use(source: str) -> Dict['str', List['DefUse']]:
     if platform.system() == 'Windows':
         PATH_TO_TINY_PDG = os.path.join(Options.PYSZZ_HOME, 'tools/TinyPDG/bin/TinyPDG.bat')
     else:
@@ -114,6 +121,10 @@ def extract_file_def_use(source: str):
     os.remove(tmpfile.name)
 
     if not result:
-        return []
+        return {}
     else:
-        return json.loads(result.stdout)
+        def_use_dict: dict = json.loads(result.stdout)
+        final_result = {}
+        for func_id, def_uses in def_use_dict.items():
+            final_result[func_id] = list(map(lambda def_use: DefUse(def_use), def_uses['variableJsons']))
+        return final_result

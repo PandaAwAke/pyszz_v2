@@ -1,17 +1,18 @@
 import hashlib
 import json
 from collections import defaultdict
-from typing import Tuple
+from typing import Tuple, Dict
 
 import networkx as nx
 from ordered_set import OrderedSet
 import logging as log
 
-from szz.naszz.function import Function
+from szz.naszz.model.def_use import DefUse
+from szz.naszz.model.function import Function
 from szz.naszz.library_utils import extract_file_def_use
 
 
-def analyze_function_dependency_graph(func: Function) -> Tuple[nx.DiGraph, defaultdict, defaultdict]:
+def analyze_function_dependency_graph(func: Function) -> Tuple[nx.DiGraph | None, Dict, Dict]:
     """
     Analyze the variable dependency graph of a function.
     Args:
@@ -23,17 +24,21 @@ def analyze_function_dependency_graph(func: Function) -> Tuple[nx.DiGraph, defau
         U: The lines and used variables presented as a dictionary {linenum: {var, ...}}
     """
     log.info(f'Running TinyPDG')
-    def_use_result: dict = extract_file_def_use(func.get_wrapped_source())
-    def_use_result = next(iter(def_use_result.values()))['variableJsons']
+    def_use_result = extract_file_def_use(func.get_wrapped_source())
+    if not def_use_result:
+        log.warning(f'Failed to parse def-use information for function {func.name}')
+        return None, {}, {}
+
+    def_use_result = next(iter(def_use_result.values()))
 
     # The line number and defined/used "variable"s.
     line_var_def = defaultdict(set)
     line_var_use = defaultdict(set)
 
-    for varDefUse in def_use_result:
-        var = Var(varDefUse['name'], varDefUse['scopeJson'])
-        def_lines = [func.transfer_wrapped_line(line) for line in varDefUse['defStmtLineNumbers']]
-        use_lines = [func.transfer_wrapped_line(line) for line in varDefUse['useStmtLineNumbers']]
+    for du in def_use_result:
+        var = Var(du.var_name, du.var_scope)
+        def_lines = [func.transfer_wrapped_line(line) for line in du.def_stmt_lines]
+        use_lines = [func.transfer_wrapped_line(line) for line in du.use_stmt_lines]
         for line in def_lines:
             line_var_def[line].add(var)
         for line in use_lines:
@@ -83,7 +88,7 @@ def calculate_diff_graph(G1: nx.DiGraph, G2: nx.DiGraph) -> nx.DiGraph:
 
 class Var:
 
-    def __init__(self, name: str, scope: dict | None = None):
+    def __init__(self, name: str, scope: DefUse.Scope | None = None):
         self.name = name
         self.scope = scope
 
@@ -98,7 +103,7 @@ class Var:
         if self.scope is None:
             return ''
 
-        json_str = json.dumps(self.scope, sort_keys=True)
+        json_str = json.dumps(self.scope.__dict__, sort_keys=True)
         md5_hash = hashlib.md5(json_str.encode('utf-8')).hexdigest()
         return md5_hash
 

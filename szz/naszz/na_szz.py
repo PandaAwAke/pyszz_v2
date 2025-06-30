@@ -1,4 +1,5 @@
 import os
+import traceback
 from collections import deque
 from collections import defaultdict
 from typing import Set, List, Dict
@@ -12,7 +13,7 @@ import logging as log
 from szz.common.issue_date import filter_by_date
 from szz.core.abstract_szz import DetectLineMoved, LineChangeType, ImpactedFile, BlameData
 from szz.ma_szz import MASZZ
-from szz.naszz.function import Function
+from szz.naszz.model.function import Function
 from szz.naszz.java_parser import JavaParser
 import library_utils as utils
 import dependency_graph as dg
@@ -109,18 +110,7 @@ class NASZZ(MASZZ):
         return result_blame_data
 
     def find_bic(self, fix_commit_hash: str, impacted_files: List['ImpactedFile'], **kwargs) -> Set[Commit]:
-        """
-        Find bug introducing commits candidates.
-
-        :param str fix_commit_hash: hash of fix commit to scan for buggy commits
-        :param List[ImpactedFile] impacted_files: list of impacted files in fix commit
-        :key ignore_revs_file_path (str): specify ignore revs file for git blame to ignore specific commits.
-        :key max_change_size (int): if the number of modified files exceeds the threshold, the commit will be
-            excluded (default 20)
-        :key detect_move_from_other_files (DetectLineMoved): Detect lines moved or copied from other files that were
-            modified in the same commit, from parent commits or from any commit (default DetectLineMoved.SAME_COMMIT)
-        :returns Set[Commit] a set of bug introducing commits candidates, represented by Commit object
-        """
+        # TODO: change this function
 
         log.info(f"find_bic() kwargs: {kwargs}")
         self._set_working_tree_to_commit(fix_commit_hash)
@@ -134,11 +124,14 @@ class NASZZ(MASZZ):
         params['detect_move_from_other_files'] = kwargs.get('detect_move_from_other_files', DetectLineMoved.SAME_COMMIT)
         params['ignore_revs_list'] = list()
         if kwargs.get('blame_rev_pointer', None):
-            params['rev_pointer'] = kwargs['blame_rev_pointer']
+            params['rev'] = kwargs['blame_rev_pointer']
+
+        # In vulnerability mode, NASZZ will trace the modified lines as earlier as possible
+        VULNERABILITY_MODE = kwargs.get('vulnerability_mode', False)
 
         log.info("staring blame")
         start = ts()
-        blame_data = list()
+        blame_data = set()
         commits_to_ignore = set()
         commits_to_ignore_current_file = set()
         bic = set()
@@ -148,14 +141,34 @@ class NASZZ(MASZZ):
             to_blame = True
             while to_blame:
                 log.info(f"excluding commits: {params['ignore_revs_list']}")
-                blame_data = self._ag_annotate([imp_file], **params)
+                try:
+                    blame_data = self._blame(
+                        file_path=imp_file.file_path,
+                        modified_lines=imp_file.modified_lines,
+                        ignore_whitespaces=True,
+                        skip_comments=True,
+                        **kwargs
+                    )
+                except:
+                    log.error(traceback.format_exc())
 
                 new_commits_to_ignore = set()
                 new_commits_to_ignore_current_file = set()
                 for bd in blame_data:
+                    # In vulnerability mode, we will trace as earlier as possible
+                    if VULNERABILITY_MODE:
+                        if os.path.splitext(imp_file.file_path)[-1].lower() in SUPPORTED_FILE_EXT:
+                            # Do Java AST Mapping things
+                        else:
+                            # Do git mapping things
+
+
+                    # Filtering unimportant commits
                     if bd.commit.hexsha not in new_commits_to_ignore and bd.commit.hexsha not in new_commits_to_ignore_current_file:
                         if bd.commit.hexsha not in commits_to_ignore_current_file:
-                            new_commits_to_ignore.update(self._exclude_commits_by_change_size(bd.commit.hexsha, max_change_size=max_change_size))
+                            # NASZZ: We do not ignore big changes here
+                            # new_commits_to_ignore.update(self._exclude_commits_by_change_size(bd.commit.hexsha, max_change_size=max_change_size))
+
                             new_commits_to_ignore.update(self.get_merge_commits(bd.commit.hexsha))
                             new_commits_to_ignore_current_file.update(self.select_meta_changes(bd.commit.hexsha, bd.file_path, filter_revert))
 
@@ -289,8 +302,8 @@ class NASZZ(MASZZ):
         new_to_old_line_mapping = defaultdict(set)
 
         for stmt_mapping in ast_mapping_result:
-            old_line = stmt_mapping['oldStmtStartLine']
-            new_line = stmt_mapping['newStmtStartLine']
+            old_line = stmt_mapping.old_stmt_start_line
+            new_line = stmt_mapping.new_stmt_start_line
             # if new_line != -1:
             #     old_to_new_line_mapping[old_line].add(new_line)
             if old_line != -1:
