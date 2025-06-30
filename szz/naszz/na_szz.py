@@ -1,28 +1,27 @@
-import hashlib
-import json
 import os
-import logging as log
-import platform
 from collections import deque
-import subprocess
-import tempfile
 from collections import defaultdict
-from typing import Set, List, Tuple, Dict
+from typing import Set, List, Dict
 from ordered_set import OrderedSet
+from time import time as ts
 
 import networkx as nx
 from git import Commit
+import logging as log
 
-from options import Options
-from szz.core.abstract_szz import DetectLineMoved, LineChangeType, ImpactedFile
+from szz.common.issue_date import filter_by_date
+from szz.core.abstract_szz import DetectLineMoved, LineChangeType, ImpactedFile, BlameData
+from szz.ma_szz import MASZZ
 from szz.naszz.function import Function
 from szz.naszz.java_parser import JavaParser
-from szz.ra_szz import RASZZ
+import library_utils as utils
+import dependency_graph as dg
+
 
 SUPPORTED_FILE_EXT = ['.java']
 
 
-class NASZZ(RASZZ):
+class NASZZ(MASZZ):
     """
     New-line Aware SZZ
     """
@@ -33,82 +32,7 @@ class NASZZ(RASZZ):
         super().__init__(repo_full_name, repo_url, repos_dir)
 
 
-    @staticmethod
-    def extract_method_history(repository_path: str, commit: str,
-                               file_path: str, method_name: str,
-                               method_declaration_line: str | int):
-        if platform.system() == 'Windows':
-            PATH_TO_CODE_TRACKER = os.path.join(Options.PYSZZ_HOME, 'tools/CodeTracker-2.7/bin/CodeTracker.bat')
-        else:
-            PATH_TO_CODE_TRACKER = os.path.join(Options.PYSZZ_HOME, 'tools/CodeTracker-2.7/bin/CodeTracker')
-
-        log.info(f'Running CodeTracker on {commit}, {file_path + "#" + method_name}')
-        cmd = [
-            PATH_TO_CODE_TRACKER,
-            '-r', repository_path,
-            '-c', commit,
-            '-f', file_path,
-            '-m', method_name,
-            '-l', str(method_declaration_line)
-        ]
-
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        if not result:
-            return {"commits": []}
-        else:
-            return json.loads(result.stdout)
-
-    @staticmethod
-    def extract_content_ast_mapping(old_content: str, new_content: str, algorithm: str = 'gt'):
-        if platform.system() == 'Windows':
-            PATH_TO_AST_MAPPING = os.path.join(Options.PYSZZ_HOME, 'tools/ICSE2021AstMapping/bin/AstMapping.bat')
-        else:
-            PATH_TO_AST_MAPPING = os.path.join(Options.PYSZZ_HOME, 'tools/ICSE2021AstMapping/bin/AstMapping')
-
-        log.info(f'Running ICSE2021 Ast Mapping')
-        with tempfile.NamedTemporaryFile(mode='r+', delete=False) as tmpfile_old,\
-                tempfile.NamedTemporaryFile(mode='r+', delete=False) as tmpfile_new:
-            tmpfile_old.write(old_content)
-            tmpfile_new.write(new_content)
-
-        cmd = [
-            PATH_TO_AST_MAPPING,
-            '-a', algorithm,
-            '-o', tmpfile_old.name,
-            '-n', tmpfile_new.name
-        ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        os.remove(tmpfile_old.name)
-        os.remove(tmpfile_new.name)
-
-        if not result:
-            return []
-        else:
-            return json.loads(result.stdout)['statementMappings']
-
-    @staticmethod
-    def extract_file_def_use(source: str):
-        if platform.system() == 'Windows':
-            PATH_TO_TINY_PDG = os.path.join(Options.PYSZZ_HOME, 'tools/TinyPDG/bin/TinyPDG.bat')
-        else:
-            PATH_TO_TINY_PDG = os.path.join(Options.PYSZZ_HOME, 'tools/TinyPDG/bin/TinyPDG')
-
-        log.info(f'Running TinyPDG')
-        with tempfile.NamedTemporaryFile(mode='r+', delete=False) as tmpfile:
-            tmpfile.write(source)
-
-        cmd = [
-            PATH_TO_TINY_PDG,
-            '-t', 'ddg',
-            '-f', tmpfile.name,
-        ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        os.remove(tmpfile.name)
-
-        if not result:
-            return []
-        else:
-            return json.loads(result.stdout)
+    # -------------- Core functions --------------
 
     def _blame(self,
                rev: str,
@@ -136,16 +60,15 @@ class NASZZ(RASZZ):
             detect_move_from_other_files
         )
 
-
-
         commits = set([blame.commit.hexsha for blame in candidate_blame_data])
-        refactorings = self._extract_refactorings(commits)
+
+        refactorings = utils.extract_refactorings(self._repository_path, commits)
 
         to_reblame = dict()
         result_blame_data = set()
         for blame in candidate_blame_data:
             can_add = True
-            for refactoring in self.__read_refactorings_for_commit(blame.commit.hexsha, refactorings):
+            for refactoring in utils.read_refactorings_for_commit(blame.commit.hexsha, refactorings):
                 for location in refactoring['rightSideLocations']:
                     file_path = location['filePath']
                     from_line = location['startLine']
@@ -185,6 +108,77 @@ class NASZZ(RASZZ):
 
         return result_blame_data
 
+    def find_bic(self, fix_commit_hash: str, impacted_files: List['ImpactedFile'], **kwargs) -> Set[Commit]:
+        """
+        Find bug introducing commits candidates.
+
+        :param str fix_commit_hash: hash of fix commit to scan for buggy commits
+        :param List[ImpactedFile] impacted_files: list of impacted files in fix commit
+        :key ignore_revs_file_path (str): specify ignore revs file for git blame to ignore specific commits.
+        :key max_change_size (int): if the number of modified files exceeds the threshold, the commit will be
+            excluded (default 20)
+        :key detect_move_from_other_files (DetectLineMoved): Detect lines moved or copied from other files that were
+            modified in the same commit, from parent commits or from any commit (default DetectLineMoved.SAME_COMMIT)
+        :returns Set[Commit] a set of bug introducing commits candidates, represented by Commit object
+        """
+
+        log.info(f"find_bic() kwargs: {kwargs}")
+        self._set_working_tree_to_commit(fix_commit_hash)
+
+        max_change_size = kwargs.get('max_change_size', MASZZ.DEFAULT_MAX_CHANGE_SIZE)
+        filter_revert = kwargs.get('filter_revert_commits', False)
+
+        params = dict()
+        params['ignore_revs_file_path'] = kwargs.get('ignore_revs_file_path', None)
+        params['detect_move_within_file'] = kwargs.get('detect_move_within_file', True)
+        params['detect_move_from_other_files'] = kwargs.get('detect_move_from_other_files', DetectLineMoved.SAME_COMMIT)
+        params['ignore_revs_list'] = list()
+        if kwargs.get('blame_rev_pointer', None):
+            params['rev_pointer'] = kwargs['blame_rev_pointer']
+
+        log.info("staring blame")
+        start = ts()
+        blame_data = list()
+        commits_to_ignore = set()
+        commits_to_ignore_current_file = set()
+        bic = set()
+        for imp_file in impacted_files:
+            commits_to_ignore_current_file = commits_to_ignore.copy()
+
+            to_blame = True
+            while to_blame:
+                log.info(f"excluding commits: {params['ignore_revs_list']}")
+                blame_data = self._ag_annotate([imp_file], **params)
+
+                new_commits_to_ignore = set()
+                new_commits_to_ignore_current_file = set()
+                for bd in blame_data:
+                    if bd.commit.hexsha not in new_commits_to_ignore and bd.commit.hexsha not in new_commits_to_ignore_current_file:
+                        if bd.commit.hexsha not in commits_to_ignore_current_file:
+                            new_commits_to_ignore.update(self._exclude_commits_by_change_size(bd.commit.hexsha, max_change_size=max_change_size))
+                            new_commits_to_ignore.update(self.get_merge_commits(bd.commit.hexsha))
+                            new_commits_to_ignore_current_file.update(self.select_meta_changes(bd.commit.hexsha, bd.file_path, filter_revert))
+
+                if len(new_commits_to_ignore) == 0 and len(new_commits_to_ignore_current_file) == 0:
+                    to_blame = False
+                elif ts() - start > (60 * 60 * 1):  # 1 hour max time
+                    log.error(f"blame timeout for {self.repository_path}")
+                    to_blame = False
+
+                commits_to_ignore.update(new_commits_to_ignore)
+                commits_to_ignore_current_file.update(commits_to_ignore)
+                commits_to_ignore_current_file.update(new_commits_to_ignore_current_file)
+                params['ignore_revs_list'] = list(commits_to_ignore_current_file)
+
+            bic.update({bd.commit for bd in blame_data if bd.commit.hexsha not in self._exclude_commits_by_change_size(bd.commit.hexsha, max_change_size)})
+
+        if kwargs.get('issue_date_filter', False):
+            bic = filter_by_date(bic, kwargs['issue_date'])
+        else:
+            log.info("Not filtering by issue date.")
+
+        return bic
+
     def start(self, fix_commit_hash: str, commit_issue_date, **kwargs) -> Set[Commit]:
         # TODO: change this function
         file_ext_to_parse = kwargs.get('file_ext_to_parse')
@@ -207,7 +201,7 @@ class NASZZ(RASZZ):
 
         # process impacted files with deleted lines
         imp_files_delete = [f for f in imp_files if f.line_change_type == LineChangeType.DELETE]
-        bic_found = super().find_bic(fix_commit_hash=fix_commit_hash,
+        bic_found = self.find_bic(fix_commit_hash=fix_commit_hash,
                                      impacted_files=imp_files_delete,
                                      ignore_revs_file_path=ignore_revs_file_path,
                                      max_change_size=max_change_size,
@@ -220,7 +214,7 @@ class NASZZ(RASZZ):
         # process impacted files with added lines
         impacted_files_duchain = self._process_impacted_files(fix_commit_hash, imp_files)
         
-        bic_found.update(super().find_bic(blame_rev_pointer='HEAD',
+        bic_found.update(self.find_bic(blame_rev_pointer='HEAD',
                                           fix_commit_hash=fix_commit_hash,
                                           impacted_files=impacted_files_duchain,
                                           ignore_revs_file_path=ignore_revs_file_path,
@@ -290,7 +284,7 @@ class NASZZ(RASZZ):
 
         # 1: Get AST mapping result
         log.info(f'Running AST Mapping')
-        ast_mapping_result = NASZZ.extract_content_ast_mapping(source_before, source_after)
+        ast_mapping_result = utils.extract_content_ast_mapping(source_before, source_after)
         # old_to_new_line_mapping = defaultdict(set)
         new_to_old_line_mapping = defaultdict(set)
 
@@ -349,11 +343,11 @@ class NASZZ(RASZZ):
         Returns:
             Suspicious lines of this function (a set of line numbers)
         """
-        G_old, _, _ = NASZZ.analyze_function_dependency_graph(old_function)
-        G_new, def_new, _ = NASZZ.analyze_function_dependency_graph(new_function)
+        G_old, _, _ = dg.analyze_function_dependency_graph(old_function)
+        G_new, def_new, _ = dg.analyze_function_dependency_graph(new_function)
 
         # Calculate difference graph
-        G_diff = NASZZ.calculate_diff_graph(G_new, G_old)
+        G_diff = dg.calculate_diff_graph(G_new, G_old)
 
         # Get the nodes of the graph (used as auxiliaries)
         nodes_old = OrderedSet(G_old.nodes())
@@ -412,100 +406,3 @@ class NASZZ(RASZZ):
                 suspicious_lines.update(G_old.get_edge_data(name, def_edge[1])['lines'])
 
         return suspicious_lines
-
-    @staticmethod
-    def analyze_function_dependency_graph(func: Function) -> Tuple[nx.DiGraph, defaultdict, defaultdict]:
-        """
-        Analyze the variable dependency graph of a function.
-        Args:
-            func: The function to analyze
-
-        Returns: (G, D, U)
-            G: The dependency graph (nx.DiGraph) of the function
-            D: The lines and defined variables presented as a dictionary {linenum:  {var, ...}}
-            U: The lines and used variables presented as a dictionary {linenum: {var, ...}}
-        """
-        log.info(f'Running TinyPDG')
-        def_use_result: dict = NASZZ.extract_file_def_use(func.get_wrapped_source())
-        def_use_result = next(iter(def_use_result.values()))['variableJsons']
-
-        # The line number and defined/used "variable"s.
-        line_var_def = defaultdict(set)
-        line_var_use = defaultdict(set)
-
-        for varDefUse in def_use_result:
-            var = Var(varDefUse['name'], varDefUse['scopeJson'])
-            def_lines = [func.transfer_wrapped_line(line) for line in varDefUse['defStmtLineNumbers']]
-            use_lines = [func.transfer_wrapped_line(line) for line in varDefUse['useStmtLineNumbers']]
-            for line in def_lines:
-                line_var_def[line].add(var)
-            for line in use_lines:
-                line_var_use[line].add(var)
-
-        edge_and_lines = defaultdict(set)
-        for line, def_vars in line_var_def.items():
-            for def_var in def_vars:
-                if line in line_var_use.keys():
-                    use_vars = line_var_use[line]
-                    for use_var in use_vars:
-                        edge_and_lines[(def_var.name, use_var.name)].add(line)
-
-        G = nx.DiGraph()
-        for edge, lines in edge_and_lines.items():
-            G.add_edge(edge[0], edge[1], lines=lines)
-
-        return G, line_var_def, line_var_use
-
-    @staticmethod
-    def calculate_diff_graph(G1: nx.DiGraph, G2: nx.DiGraph) -> nx.DiGraph:
-        G = nx.DiGraph()
-        nodes1 = OrderedSet(G1.nodes())
-        nodes2 = OrderedSet(G2.nodes())
-
-        matched_nodes = OrderedSet()
-        for node in nodes1:
-            if node in nodes2:
-                matched_nodes.add(node)
-
-        matched_edges = OrderedSet()
-        for edge in G1.edges():
-            u, v = edge
-            if G2.has_edge(u, v):
-                matched_edges.add(edge)
-
-        for node in nodes1:
-            if node not in matched_nodes:
-                G.add_node(node)
-
-        for edge in G1.edges():
-            if edge not in matched_edges:
-                G.add_edge(edge[0], edge[1])
-
-        return G
-
-
-class Var:
-    def __init__(self, name: str, scope: dict | None = None):
-        self.name = name
-        self.scope = scope
-
-    def get_scope_md5(self) -> str:
-        """
-        Hash the scope info of a variable into MD5 value.
-        Args:
-            scope: None, or a dict like
-             {
-                "type" : "StatementInfo",
-                "lineNumber" : 2
-             }
-
-        Returns:
-            The MD5 value of the scope. If scope is None, return empty string
-        """
-
-        if self.scope is None:
-            return ''
-
-        json_str = json.dumps(self.scope, sort_keys=True)
-        md5_hash = hashlib.md5(json_str.encode('utf-8')).hexdigest()
-        return md5_hash

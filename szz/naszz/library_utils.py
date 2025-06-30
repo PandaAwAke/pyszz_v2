@@ -1,0 +1,119 @@
+import json
+import os
+import platform
+
+import subprocess
+import tempfile
+
+from options import Options
+import logging as log
+
+
+# Modified from RASZZ
+def extract_refactorings(repository_path, commits):
+    if platform.system() == 'Windows':
+        PATH_TO_REFMINER = os.path.join(Options.PYSZZ_HOME, 'tools/RefactoringMiner-2.0/bin/RefactoringMiner.bat')
+    else:
+        PATH_TO_REFMINER = os.path.join(Options.PYSZZ_HOME, 'tools/RefactoringMiner-2.0/bin/RefactoringMiner')
+
+    refactorings = dict()
+    for commit in commits:
+        if not commit in refactorings:
+            log.info(f'Running RefMiner on {commit}')
+            cmd = [PATH_TO_REFMINER, '-c', repository_path, commit]
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+            if not result:
+                return None
+            else:
+                return json.loads(result.stdout)
+
+    return refactorings
+
+
+# Modified from RASZZ
+def read_refactorings_for_commit(fix_commit_hash, fix_refactorings):
+    refactorings = list()
+    try:
+        refactorings = fix_refactorings[fix_commit_hash]['commits'][0]['refactorings']
+    except (KeyError, IndexError) as e:
+        # no refactorings found
+        pass
+
+    return refactorings
+
+
+def extract_method_history(repository_path: str, commit: str,
+                           file_path: str, method_name: str,
+                           method_declaration_line: str | int):
+    if platform.system() == 'Windows':
+        PATH_TO_CODE_TRACKER = os.path.join(Options.PYSZZ_HOME, 'tools/CodeTracker-2.7/bin/CodeTracker.bat')
+    else:
+        PATH_TO_CODE_TRACKER = os.path.join(Options.PYSZZ_HOME, 'tools/CodeTracker-2.7/bin/CodeTracker')
+
+    log.info(f'Running CodeTracker on {commit}, {file_path + "#" + method_name}')
+    cmd = [
+        PATH_TO_CODE_TRACKER,
+        '-r', repository_path,
+        '-c', commit,
+        '-f', file_path,
+        '-m', method_name,
+        '-l', str(method_declaration_line)
+    ]
+
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+    if not result:
+        return {"commits": []}
+    else:
+        return json.loads(result.stdout)
+
+
+def extract_content_ast_mapping(old_content: str, new_content: str, algorithm: str = 'gt'):
+    if platform.system() == 'Windows':
+        PATH_TO_AST_MAPPING = os.path.join(Options.PYSZZ_HOME, 'tools/ICSE2021AstMapping/bin/AstMapping.bat')
+    else:
+        PATH_TO_AST_MAPPING = os.path.join(Options.PYSZZ_HOME, 'tools/ICSE2021AstMapping/bin/AstMapping')
+
+    log.info(f'Running ICSE2021 Ast Mapping')
+    with tempfile.NamedTemporaryFile(mode='r+', delete=False) as tmpfile_old, \
+            tempfile.NamedTemporaryFile(mode='r+', delete=False) as tmpfile_new:
+        tmpfile_old.write(old_content)
+        tmpfile_new.write(new_content)
+
+    cmd = [
+        PATH_TO_AST_MAPPING,
+        '-a', algorithm,
+        '-o', tmpfile_old.name,
+        '-n', tmpfile_new.name
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+    os.remove(tmpfile_old.name)
+    os.remove(tmpfile_new.name)
+
+    if not result:
+        return []
+    else:
+        return json.loads(result.stdout)['statementMappings']
+
+
+def extract_file_def_use(source: str):
+    if platform.system() == 'Windows':
+        PATH_TO_TINY_PDG = os.path.join(Options.PYSZZ_HOME, 'tools/TinyPDG/bin/TinyPDG.bat')
+    else:
+        PATH_TO_TINY_PDG = os.path.join(Options.PYSZZ_HOME, 'tools/TinyPDG/bin/TinyPDG')
+
+    log.info(f'Running TinyPDG')
+    with tempfile.NamedTemporaryFile(mode='r+', delete=False) as tmpfile:
+        tmpfile.write(source)
+
+    cmd = [
+        PATH_TO_TINY_PDG,
+        '-t', 'ddg',
+        '-f', tmpfile.name,
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+    os.remove(tmpfile.name)
+
+    if not result:
+        return []
+    else:
+        return json.loads(result.stdout)
