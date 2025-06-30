@@ -1,4 +1,5 @@
 import os
+import sys
 import traceback
 from collections import deque
 from collections import defaultdict
@@ -10,6 +11,8 @@ import networkx as nx
 from git import Commit
 import logging as log
 
+from pydriller import GitRepository, ModificationType
+
 from szz.common.issue_date import filter_by_date
 from szz.core.abstract_szz import DetectLineMoved, LineChangeType, ImpactedFile, BlameData
 from szz.ma_szz import MASZZ
@@ -20,6 +23,7 @@ import dependency_graph as dg
 
 
 SUPPORTED_FILE_EXT = ['.java']
+LEVENSHTEIN_RATIO_THRESHOLD = 0.75
 
 
 class NASZZ(MASZZ):
@@ -110,8 +114,6 @@ class NASZZ(MASZZ):
         return result_blame_data
 
     def find_bic(self, fix_commit_hash: str, impacted_files: List['ImpactedFile'], **kwargs) -> Set[Commit]:
-        # TODO: change this function
-
         log.info(f"find_bic() kwargs: {kwargs}")
         self._set_working_tree_to_commit(fix_commit_hash)
 
@@ -125,65 +127,140 @@ class NASZZ(MASZZ):
         params['ignore_revs_list'] = list()
         if kwargs.get('blame_rev_pointer', None):
             params['rev'] = kwargs['blame_rev_pointer']
+        else:
+            params['rev'] = 'HEAD^'     # See ag_szz._ag_annotate()
 
         # In vulnerability mode, NASZZ will trace the modified lines as earlier as possible
-        VULNERABILITY_MODE = kwargs.get('vulnerability_mode', False)
+        VULNERABILITY_MODE = kwargs.get('vulnerability_mode', True)
 
         log.info("staring blame")
         start = ts()
         blame_data = set()
         commits_to_ignore = set()
         commits_to_ignore_current_file = set()
+
         bic = set()
         for imp_file in impacted_files:
-            commits_to_ignore_current_file = commits_to_ignore.copy()
-
-            to_blame = True
-            while to_blame:
-                log.info(f"excluding commits: {params['ignore_revs_list']}")
-                try:
-                    blame_data = self._blame(
-                        file_path=imp_file.file_path,
-                        modified_lines=imp_file.modified_lines,
-                        ignore_whitespaces=True,
-                        skip_comments=True,
-                        **kwargs
-                    )
-                except:
-                    log.error(traceback.format_exc())
-
-                new_commits_to_ignore = set()
-                new_commits_to_ignore_current_file = set()
+            if VULNERABILITY_MODE:
+                # In vulnerability mode, we will trace every line as earlier as possible
+                blame_data = self._blame(
+                    rev=f'{fix_commit_hash}^',
+                    file_path=imp_file.file_path,
+                    modified_lines=imp_file.modified_lines,
+                    ignore_whitespaces=True,
+                    skip_comments=True,
+                    **kwargs
+                )
                 for bd in blame_data:
-                    # In vulnerability mode, we will trace as earlier as possible
-                    if VULNERABILITY_MODE:
+                    previous_bds = []   # TODO: use this
+
+                    while True:
+                        match = False
                         if os.path.splitext(imp_file.file_path)[-1].lower() in SUPPORTED_FILE_EXT:
-                            # Do Java AST Mapping things
+                            # Try to map by Java AST Mapping things
+                            parent_hash = self.repository.git.rev_parse(f"{bd.commit.hexsha}^")
+                            source_file_content_after = self.repository.git.show(f"{bd.commit.hexsha}:{imp_file.file_path}")
+                            source_file_content_before = self.repository.git.show(f"{parent_hash}:{imp_file.file_path}")
+                            ast_mapping_result = utils.extract_content_ast_mapping(source_file_content_after, source_file_content_before)
+                            for mapping in ast_mapping_result:
+                                if mapping.old_stmt_start_line != -1 and mapping.new_stmt_start_line == bd.line_num:
+                                    match = True
+                                    break
                         else:
-                            # Do git mapping things
+                            # Try to map by PyDriller mapping things (modified from V-SZZ)
+                            repo = GitRepository(self.repository_path)
+                            commit = repo.get_commit(bd.commit.hexsha)
+                            for modification in commit.modifications:
+                                # Filter: we only consider imp_file
+                                path = modification.new_path
+                                if modification.change_type in [ModificationType.DELETE, ModificationType.RENAME]:
+                                    path = modification.old_path
 
+                                if path != imp_file.file_path:
+                                    continue
 
-                    # Filtering unimportant commits
-                    if bd.commit.hexsha not in new_commits_to_ignore and bd.commit.hexsha not in new_commits_to_ignore_current_file:
-                        if bd.commit.hexsha not in commits_to_ignore_current_file:
-                            # NASZZ: We do not ignore big changes here
-                            # new_commits_to_ignore.update(self._exclude_commits_by_change_size(bd.commit.hexsha, max_change_size=max_change_size))
+                                # If there is no 'old_path', break (usually an adding)
+                                if not modification.old_path:
+                                    break
 
-                            new_commits_to_ignore.update(self.get_merge_commits(bd.commit.hexsha))
-                            new_commits_to_ignore_current_file.update(self.select_meta_changes(bd.commit.hexsha, bd.file_path, filter_revert))
+                                lines_deleted = [deleted for deleted in modification.diff_parsed['deleted']]
+                                if len(lines_deleted) == 0:
+                                    break
 
-                if len(new_commits_to_ignore) == 0 and len(new_commits_to_ignore_current_file) == 0:
-                    to_blame = False
-                elif ts() - start > (60 * 60 * 1):  # 1 hour max time
-                    log.error(f"blame timeout for {self.repository_path}")
-                    to_blame = False
+                                if bd.line_str:
+                                    # For each deleted line, see if any one has a similarity ratio over LEVENSHTEIN_RATIO_THRESHOLD
+                                    tuples = []
+                                    for line_number, line in lines_deleted:
+                                        ratio = utils.compute_similarity_ratio(bd.line_str, line)
+                                        line_distance = abs(bd.line_num - line_number)
+                                        tuples.append((ratio, -line_distance, line_number))     # Used for sorting
 
-                commits_to_ignore.update(new_commits_to_ignore)
-                commits_to_ignore_current_file.update(commits_to_ignore)
-                commits_to_ignore_current_file.update(new_commits_to_ignore_current_file)
-                params['ignore_revs_list'] = list(commits_to_ignore_current_file)
+                                    tuples.sort(reverse=True)
+                                    if tuples[0][0] > LEVENSHTEIN_RATIO_THRESHOLD:
+                                        match = True
+                                        break
 
-            bic.update({bd.commit for bd in blame_data if bd.commit.hexsha not in self._exclude_commits_by_change_size(bd.commit.hexsha, max_change_size)})
+                        if not match:
+                            break
+                        previous_bds.append(bd)
+
+                        if ts() - start > (60 * 60 * 1):  # 1 hour max time
+                            log.error(f"blame timeout for {self.repository_path}")
+                            break
+
+                        # Blame forward for just this line
+                        bd = next(iter(self._blame(
+                            rev=f'{bd.commit.hexsha}^',
+                            file_path=imp_file.file_path,
+                            modified_lines=[],
+                            ignore_whitespaces=True,
+                            skip_comments=True,
+                            **kwargs
+                        )))
+
+                    bic.add(bd.commit)
+            else:
+                commits_to_ignore_current_file = commits_to_ignore.copy()
+                to_blame = True
+                while to_blame:
+                    log.info(f"excluding commits: {params['ignore_revs_list']}")
+                    try:
+                        blame_data = self._blame(
+                            file_path=imp_file.file_path,
+                            modified_lines=imp_file.modified_lines,
+                            ignore_whitespaces=True,
+                            skip_comments=True,
+                            **kwargs
+                        )
+                    except:
+                        log.error(traceback.format_exc())
+
+                    new_commits_to_ignore = set()
+                    new_commits_to_ignore_current_file = set()
+                    for bd in blame_data:
+                        # Filtering unimportant commits
+                        if bd.commit.hexsha not in new_commits_to_ignore and bd.commit.hexsha not in new_commits_to_ignore_current_file:
+                            if bd.commit.hexsha not in commits_to_ignore_current_file:
+                                # NASZZ: We do not ignore big changes here
+                                # new_commits_to_ignore.update(self._exclude_commits_by_change_size(bd.commit.hexsha, max_change_size=max_change_size))
+
+                                new_commits_to_ignore.update(self.get_merge_commits(bd.commit.hexsha))
+                                new_commits_to_ignore_current_file.update(self.select_meta_changes(bd.commit.hexsha, bd.file_path, filter_revert))
+
+                    if len(new_commits_to_ignore) == 0 and len(new_commits_to_ignore_current_file) == 0:
+                        to_blame = False
+                    if ts() - start > (60 * 60 * 1):  # 1 hour max time
+                        log.error(f"blame timeout for {self.repository_path}")
+                        break
+
+                    commits_to_ignore.update(new_commits_to_ignore)
+                    commits_to_ignore_current_file.update(commits_to_ignore)
+                    commits_to_ignore_current_file.update(new_commits_to_ignore_current_file)
+                    params['ignore_revs_list'] = list(commits_to_ignore_current_file)
+
+                # NASZZ: We do not ignore big changes here
+                # bic.update({bd.commit for bd in blame_data if bd.commit.hexsha not in self._exclude_commits_by_change_size(bd.commit.hexsha, max_change_size)})
+                bic.update({bd.commit for bd in blame_data})
 
         if kwargs.get('issue_date_filter', False):
             bic = filter_by_date(bic, kwargs['issue_date'])
@@ -282,13 +359,13 @@ class NASZZ(MASZZ):
         return def_use_imp_files
 
     @staticmethod
-    def select_suspicious_lines(imp_file: ImpactedFile, source_before: str, source_after: str) -> Dict[Function, Set]:
+    def select_suspicious_lines(imp_file: ImpactedFile, source_file_before: str, source_file_after: str) -> Dict[Function, Set]:
         """
         Compute suspicious lines at function level from impacted lines (usually added lines)
         Args:
             imp_file:
-            source_before: Function source after the commit (should not be empty)
-            source_after: Function source before the commit (could be None)
+            source_file_before: File source after the commit (should not be empty)
+            source_file_after: File source before the commit (could be None)
 
         Returns:
             suspicious_lines of each function
@@ -297,7 +374,7 @@ class NASZZ(MASZZ):
 
         # 1: Get AST mapping result
         log.info(f'Running AST Mapping')
-        ast_mapping_result = utils.extract_content_ast_mapping(source_before, source_after)
+        ast_mapping_result = utils.extract_content_ast_mapping(source_file_before, source_file_after)
         # old_to_new_line_mapping = defaultdict(set)
         new_to_old_line_mapping = defaultdict(set)
 
@@ -310,7 +387,7 @@ class NASZZ(MASZZ):
                 new_to_old_line_mapping[new_line].add(old_line)
 
         # 2: Get all functions in this file
-        functions = parser.parse_functions(source_after)
+        functions = parser.parse_functions(source_file_after)
         modified_functions = []
 
         # 3: Remove functions which were not modified
@@ -326,7 +403,7 @@ class NASZZ(MASZZ):
 
         # 4: For each modified function, try to find its previous version
         suspicious_lines = dict()
-        old_functions = parser.parse_functions(source_before)
+        old_functions = parser.parse_functions(source_file_before)
         function_mapping = []
 
         for func in modified_functions:

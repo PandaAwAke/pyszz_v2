@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 from typing import List, Dict
 
+import Levenshtein
+
 from options import Options
 import logging as log
 
@@ -128,3 +130,13 @@ def extract_file_def_use(source: str) -> Dict['str', List['DefUse']]:
         for func_id, def_uses in def_use_dict.items():
             final_result[func_id] = list(map(lambda def_use: DefUse(def_use), def_uses['variableJsons']))
         return final_result
+
+
+def remove_whitespace(s: str):
+    return ''.join(s.strip().split())
+
+
+def compute_similarity_ratio(line_str1: str, line_str2: str):
+    l1 = remove_whitespace(line_str1)
+    l2 = remove_whitespace(line_str2)
+    return Levenshtein.ratio(l1, l2)
