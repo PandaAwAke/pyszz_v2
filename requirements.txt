@@ -11,3 +11,4 @@ PyYAML==6.0.2
 testresources==2.0.2
 ordered-set==4.1.0
 Levenshtein==0.27.1
+cachetools==6.1.0

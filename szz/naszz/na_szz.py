@@ -16,6 +16,7 @@ from pydriller import GitRepository, ModificationType
 from szz.common.issue_date import filter_by_date
 from szz.core.abstract_szz import DetectLineMoved, LineChangeType, ImpactedFile, BlameData
 from szz.ma_szz import MASZZ
+from szz.naszz.concurrent_cache import ConcurrentCache
 from szz.naszz.model.function import Function
 from szz.naszz.java_parser import JavaParser
 import library_utils as utils
@@ -34,6 +35,7 @@ class NASZZ(MASZZ):
     def __init__(self, repo_full_name: str, repo_url: str, repos_dir: str = None):
         self.repo_full_name = repo_full_name
         self.repos_dir = repos_dir
+        self.cache = ConcurrentCache()
         super().__init__(repo_full_name, repo_url, repos_dir)
 
 
@@ -50,8 +52,6 @@ class NASZZ(MASZZ):
                detect_move_within_file: bool = False,
                detect_move_from_other_files: 'DetectLineMoved' = None
                ) -> Set['BlameData']:
-        # TODO: change this function
-
         log.info("Running super-blame")
         candidate_blame_data = super()._blame(
             rev,
@@ -73,6 +73,7 @@ class NASZZ(MASZZ):
         result_blame_data = set()
         for blame in candidate_blame_data:
             can_add = True
+            # Case 1: Detected refactoring
             for refactoring in utils.read_refactorings_for_commit(blame.commit.hexsha, refactorings):
                 for location in refactoring['rightSideLocations']:
                     file_path = location['filePath']
@@ -87,6 +88,10 @@ class NASZZ(MASZZ):
                         else:
                             to_reblame[commit_key].modified_lines.add(blame.line_num)
                         can_add = False
+
+            # TODO: Case 2: No previous version of this line was found, try to find it in the method history
+            
+            self.cache.get_or_put()
 
             if can_add:
                 result_blame_data.add(blame)
@@ -158,9 +163,13 @@ class NASZZ(MASZZ):
                         match = False
                         if os.path.splitext(imp_file.file_path)[-1].lower() in SUPPORTED_FILE_EXT:
                             # Try to map by Java AST Mapping things
-                            parent_hash = self.repository.git.rev_parse(f"{bd.commit.hexsha}^")
-                            source_file_content_after = self.repository.git.show(f"{bd.commit.hexsha}:{imp_file.file_path}")
-                            source_file_content_before = self.repository.git.show(f"{parent_hash}:{imp_file.file_path}")
+                            try:
+                                parent_hash = self.repository.git.rev_parse(f"{bd.commit.hexsha}^")
+                                source_file_content_after = self.repository.git.show(f"{bd.commit.hexsha}:{imp_file.file_path}")
+                                source_file_content_before = self.repository.git.show(f"{parent_hash}:{imp_file.file_path}")
+                            except:
+                                break
+
                             ast_mapping_result = utils.extract_content_ast_mapping(source_file_content_after, source_file_content_before)
                             for mapping in ast_mapping_result:
                                 if mapping.old_stmt_start_line != -1 and mapping.new_stmt_start_line == bd.line_num:
@@ -212,7 +221,7 @@ class NASZZ(MASZZ):
                         bd = next(iter(self._blame(
                             rev=f'{bd.commit.hexsha}^',
                             file_path=imp_file.file_path,
-                            modified_lines=[],
+                            modified_lines=[],  # TODO: fix this
                             ignore_whitespaces=True,
                             skip_comments=True,
                             **kwargs
@@ -496,3 +505,10 @@ class NASZZ(MASZZ):
                 suspicious_lines.update(G_old.get_edge_data(name, def_edge[1])['lines'])
 
         return suspicious_lines
+
+
+class ReblameCandidate:
+    def __init__(self, rev, file_path, modified_lines: Set):
+        self.rev = rev
+        self.file_path = file_path
+        self.modified_lines = modified_lines
