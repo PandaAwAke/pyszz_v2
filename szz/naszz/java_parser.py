@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Tuple
 
 import javalang
 from javalang.tree import MethodDeclaration
@@ -8,17 +8,27 @@ from szz.naszz.model.function import Function
 
 class JavaParser:
 
-    def _parse_function_position(self, file_source: str, method: MethodDeclaration):
-        start_line = method.position.line
-        if method.annotations:
-            start_line = min(start_line, min(map(lambda anno: anno.position.line, method.annotations)))
+    def _parse_function_position(self, file_source: str, method: MethodDeclaration) -> Tuple[int, int]:
+        """
+        Parse the start line and the end line of the method.
+        Args:
+            file_source: The source code of the method.
+            method: The MethodDeclaration object of the method.
+
+        Returns:
+            A tuple of (start_line, end_line).
+        """
+        start_line: int = method.position.line
+        annotations = getattr(method, 'annotations')
+        if annotations:
+            start_line = min(start_line, min(map(lambda anno: anno.position.line, annotations)))
 
         # Find the end position
         lines = file_source.split('\n')
         brace_count = 0
         found_start = False
 
-        end_line = None
+        end_line: int = -1
         for i in range(start_line - 1, len(lines)):
             line = lines[i]
             if not found_start and '{' in line:
@@ -32,14 +42,19 @@ class JavaParser:
                     end_line = i + 1
                     break
 
-        if end_line:
-            return start_line, end_line
-        return None
+        assert start_line is not None and end_line != -1
+        return start_line, end_line
+
 
     def parse_functions(self, file_source: str) -> List['Function']:
         """
         Parse functions in a file.
         Note that annotations and modifiers would be ignored.
+        Args:
+            file_source: The source code of the method.
+
+        Returns:
+            A list of Function objects.
         """
         try:
             tree = javalang.parse.parse(file_source)

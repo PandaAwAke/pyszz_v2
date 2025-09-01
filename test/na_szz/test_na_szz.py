@@ -183,12 +183,12 @@ def test_na_szz():
 
 
 if __name__ == '__main__':
-    # test_extract_method_history()
+    test_extract_method_history()
     # test_extract_commit_file_ast_mapping()
     # test_extract_content_ast_mapping()
     # test_extract_file_def_use()
     # test_analyze_function_dependency_graph()
-    test_analyze_function_change()
+    # test_analyze_function_change()
 
     # test_na_szz()
     print("+++ Test passed +++")
