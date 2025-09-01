@@ -68,7 +68,7 @@ def extract_method_history(repository_path: str,
         method_declaration_line: The declaration line of the method.
 
     Returns:
-        A list of MethodHistory objects.
+        A list of MethodHistory objects. (From latest to oldest)
     """
     if platform.system() == 'Windows':
         PATH_TO_CODE_TRACKER = os.path.join(Options.PYSZZ_HOME, 'tools/CodeTracker-2.7/bin/CodeTracker.bat')
@@ -172,7 +172,7 @@ def extract_file_def_use(source: str) -> Dict['str', List['DefUse']]:
 
 # --------------------- Utility functions ---------------------
 
-def read_refactorings_for_commit(commit_hash, fix_refactorings) -> List:
+def read_refactorings_for_commit(commit_hash: str, fix_refactorings) -> List:
     """
     Read the refactoring results from Refactoring Miner.
     Args:

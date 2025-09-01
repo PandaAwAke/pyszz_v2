@@ -35,7 +35,8 @@ class NASZZ(MASZZ):
     def __init__(self, repo_full_name: str, repo_url: str, repos_dir: str = None):
         self.repo_full_name = repo_full_name
         self.repos_dir = repos_dir
-        self.cache = ConcurrentCache()
+        self.file_methods_cache = ConcurrentCache()
+        self.parser = JavaParser()
         super().__init__(repo_full_name, repo_url, repos_dir)
 
 
@@ -72,8 +73,9 @@ class NASZZ(MASZZ):
         to_reblame = dict()
         result_blame_data = set()
         for blame in candidate_blame_data:
+            commit_key = blame.commit.hexsha + "@" + blame.file_path
             can_add = True
-            # Case 1: Detected refactoring
+            # Case 1: Refactoring detected for this line
             for refactoring in utils.read_refactorings_for_commit(blame.commit.hexsha, refactorings):
                 for location in refactoring['rightSideLocations']:
                     file_path = location['filePath']
@@ -82,16 +84,43 @@ class NASZZ(MASZZ):
 
                     if blame.file_path == file_path and blame.line_num >= from_line and blame.line_num <= to_line and blame.commit.hexsha not in ignore_revs_list:
                         log.info(f'Ignoring {blame.file_path} line {blame.line_num} (refactoring {refactoring["type"]})')
-                        commit_key = blame.commit.hexsha + "@" + blame.file_path
                         if not commit_key in to_reblame:
                             to_reblame[commit_key] = ReblameCandidate(blame.commit.hexsha, blame.file_path, {blame.line_num})
                         else:
                             to_reblame[commit_key].modified_lines.add(blame.line_num)
                         can_add = False
 
-            # TODO: Case 2: No previous version of this line was found, try to find it in the method history
-            
-            self.cache.get_or_put()
+            if not can_add:
+                continue
+
+            # Case 2: No previous version of this line was found, try to find it in the method history
+            file_source = self.repository.git.show(f"{blame.commit.hexsha}:{blame.file_path}")
+            methods: List[Function] = self.file_methods_cache.get_or_put(file_source,
+                                                         lambda: self.parser.parse_functions(file_source))
+
+            matched_method = None
+            for method in methods:
+                if method.start_line <= blame.line_num <= method.end_line:
+                    matched_method = method
+                    break
+
+            if matched_method:
+                history = utils.extract_method_history(self.repository_path, blame.commit.hexsha, blame.file_path, matched_method.name, matched_method.start_line)
+                for index in range(len(history)):
+                    method_history = history[index]
+                    if method_history.commit_id == blame.commit.hexsha and index < len(history) - 1:
+                        # Found the matched method in the history
+                        commit_old = history[index + 1].commit_id
+                        commit_new = method_history.commit_id
+
+                        # TODO: Try to find AST mapping in it
+
+                        if False:
+                            if not commit_key in to_reblame:
+                                to_reblame[commit_key] = ReblameCandidate(blame.commit.hexsha, blame.file_path, {blame.line_num})
+                            else:
+                                to_reblame[commit_key].modified_lines.add(blame.line_num)
+                            can_add = False
 
             if can_add:
                 result_blame_data.add(blame)
@@ -367,8 +396,7 @@ class NASZZ(MASZZ):
 
         return def_use_imp_files
 
-    @staticmethod
-    def select_suspicious_lines(imp_file: ImpactedFile, source_file_before: str, source_file_after: str) -> Dict[Function, Set]:
+    def select_suspicious_lines(self, imp_file: ImpactedFile, source_file_before: str, source_file_after: str) -> Dict[Function, Set]:
         """
         Compute suspicious lines at function level from impacted lines (usually added lines)
         Args:
@@ -379,7 +407,6 @@ class NASZZ(MASZZ):
         Returns:
             suspicious_lines of each function
         """
-        parser = JavaParser()
 
         # 1: Get AST mapping result
         log.info(f'Running AST Mapping')
@@ -396,7 +423,8 @@ class NASZZ(MASZZ):
                 new_to_old_line_mapping[new_line].add(old_line)
 
         # 2: Get all functions in this file
-        functions = parser.parse_functions(source_file_after)
+        functions = self.file_methods_cache.get_or_put(source_file_after,
+                                                       lambda: self.parser.parse_functions(source_file_after))
         modified_functions = []
 
         # 3: Remove functions which were not modified
@@ -412,7 +440,8 @@ class NASZZ(MASZZ):
 
         # 4: For each modified function, try to find its previous version
         suspicious_lines = dict()
-        old_functions = parser.parse_functions(source_file_before)
+        old_functions = self.file_methods_cache.get_or_put(source_file_before,
+                                                           lambda: self.parser.parse_functions(source_file_before))
         function_mapping = []
 
         for func in modified_functions:
