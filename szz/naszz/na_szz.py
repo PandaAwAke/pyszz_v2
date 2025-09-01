@@ -3,6 +3,7 @@ import sys
 import traceback
 from collections import deque
 from collections import defaultdict
+from functools import reduce
 from typing import Set, List, Dict
 from ordered_set import OrderedSet
 from time import time as ts
@@ -90,37 +91,39 @@ class NASZZ(MASZZ):
                             to_reblame[commit_key].modified_lines.add(blame.line_num)
                         can_add = False
 
-            if not can_add:
-                continue
-
-            # Case 2: No previous version of this line was found, try to find it in the method history
-            file_source = self.repository.git.show(f"{blame.commit.hexsha}:{blame.file_path}")
-            methods: List[Function] = self.file_methods_cache.get_or_put(file_source,
-                                                         lambda: self.parser.parse_functions(file_source))
-
-            matched_method = None
-            for method in methods:
-                if method.start_line <= blame.line_num <= method.end_line:
-                    matched_method = method
-                    break
-
-            if matched_method:
-                history = utils.extract_method_history(self.repository_path, blame.commit.hexsha, blame.file_path, matched_method.name, matched_method.start_line)
-                for index in range(len(history)):
-                    method_history = history[index]
-                    if method_history.commit_id == blame.commit.hexsha and index < len(history) - 1:
-                        # Found the matched method in the history
-                        commit_old = history[index + 1].commit_id
-                        commit_new = method_history.commit_id
-
-                        # TODO: Try to find AST mapping in it
-
-                        if False:
-                            if not commit_key in to_reblame:
-                                to_reblame[commit_key] = ReblameCandidate(blame.commit.hexsha, blame.file_path, {blame.line_num})
-                            else:
-                                to_reblame[commit_key].modified_lines.add(blame.line_num)
-                            can_add = False
+            # TODO: is this necessary?
+            # # Case 2: No previous version of this line was found, try to find it in the method history
+            #
+            # if not can_add:
+            #     continue
+            #
+            # file_source = self.repository.git.show(f"{blame.commit.hexsha}:{blame.file_path}")
+            # methods: List[Function] = self.file_methods_cache.get_or_put(file_source,
+            #                                              lambda: self.parser.parse_functions(file_source))
+            #
+            # matched_method = None
+            # for method in methods:
+            #     if method.start_line <= blame.line_num <= method.end_line:
+            #         matched_method = method
+            #         break
+            #
+            # if matched_method:
+            #     history = utils.extract_method_history(self.repository_path, blame.commit.hexsha, blame.file_path, matched_method.name, matched_method.start_line)
+            #     for index in range(len(history)):
+            #         method_history = history[index]
+            #         if method_history.commit_id == blame.commit.hexsha and index < len(history) - 1:
+            #             # Found the matched method in the history
+            #             commit_old = history[index + 1].commit_id
+            #             commit_new = method_history.commit_id
+            #
+            #             # TODO: Try to find AST mapping in it
+            #
+            #             if False:
+            #                 if not commit_key in to_reblame:
+            #                     to_reblame[commit_key] = ReblameCandidate(blame.commit.hexsha, blame.file_path, {blame.line_num})
+            #                 else:
+            #                     to_reblame[commit_key].modified_lines.add(blame.line_num)
+            #                 can_add = False
 
             if can_add:
                 result_blame_data.add(blame)
@@ -387,20 +390,28 @@ class NASZZ(MASZZ):
                     # This is an introduced change, or some other errors occurred
                     continue
 
-                func_suspicious_lines = NASZZ.select_suspicious_lines(imp_file, source_file_content_before, source_file_content_after)
-                log.info(f"added lines to blame={lines_to_blame} for file={imp_file.file_path}")
-                if lines_to_blame:
-                    def_use_imp_files.append(ImpactedFile(imp_file.file_path, list(lines_to_blame), None))
+                func_suspicious_lines = self.select_suspicious_lines(imp_file, source_file_content_before, source_file_content_after)
+
+                suspicious_lines = []
+                for lines in func_suspicious_lines.values():
+                    suspicious_lines.extend(lines)
+
+                log.info(f"added lines to blame={suspicious_lines} for file={imp_file.file_path}")
+                if suspicious_lines:
+                    def_use_imp_files.append(ImpactedFile(imp_file.file_path, suspicious_lines, None))
 
         log.info(f"impacted_files_ext={def_use_imp_files}")
 
         return def_use_imp_files
 
-    def select_suspicious_lines(self, imp_file: ImpactedFile, source_file_before: str, source_file_after: str) -> Dict[Function, Set]:
+    def select_suspicious_lines(self,
+                                imp_file: ImpactedFile,
+                                source_file_before: str,
+                                source_file_after: str) -> Dict[Function, Set]:
         """
         Compute suspicious lines at function level from impacted lines (usually added lines)
         Args:
-            imp_file:
+            imp_file: The ImpactedFile object.
             source_file_before: File source after the commit (should not be empty)
             source_file_after: File source before the commit (could be None)
 
