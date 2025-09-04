@@ -1,9 +1,7 @@
 import os
-import sys
 import traceback
 from collections import deque
 from collections import defaultdict
-from functools import reduce
 from typing import Set, List, Dict
 from ordered_set import OrderedSet
 from time import time as ts
@@ -20,8 +18,8 @@ from szz.ma_szz import MASZZ
 from szz.naszz.concurrent_cache import ConcurrentCache
 from szz.naszz.model.function import Function
 from szz.naszz.java_parser import JavaParser
-import library_utils as utils
-import dependency_graph as dg
+import szz.naszz.library_utils as utils
+import szz.naszz.dependency_graph as dg
 
 
 SUPPORTED_FILE_EXT = ['.java']
